@@ -1,0 +1,16 @@
+segmentation:
+  threshold: 27.0
+  min_scene_len: 15
+  fade_threshold: 12.0
+transcription:
+  model: base
+  language: en
+frame_sampling:
+  fps: 1
+  output_dir: frames/
+ocr:
+  languages:
+    - en
+  min_confidence: 0.5
+output:
+  output_file: timeline.json

@@ -1,0 +1,7 @@
+scenedetect[opencv]>=0.6.4
+openai-whisper>=20231117
+easyocr>=1.7.1
+opencv-python>=4.8.0
+pydantic>=2.0.0
+click>=8.0.0
+pyyaml>=6.0.0

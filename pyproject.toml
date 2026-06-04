@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-segmentation"
+version = "0.1.0"
+description = "MVP Video Segmentation Engine for software tutorial videos"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "scenedetect[opencv]>=0.6.4",
+    "openai-whisper>=20231117",
+    "easyocr>=1.7.1",
+    "opencv-python>=4.8.0",
+    "pydantic>=2.0.0",
+    "click>=8.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.scripts]
+video-segment = "video_segmentation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["video_segmentation*"]
