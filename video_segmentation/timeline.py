@@ -6,12 +6,14 @@ import json
 import logging
 from pathlib import Path
 
+from video_segmentation.config import OCRConfig, UITrackingConfig
 from video_segmentation.models import (
-    OCRResult,
     SceneSegment,
     Timeline,
     TimelineSegment,
+    TrackingResult,
     TranscriptChunk,
+    UIElementTrack,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,17 +25,19 @@ _MAX_DESCRIPTION_LENGTH = 200
 def build_timeline(
     segments: list[SceneSegment],
     aligned_transcripts: dict[int, list[TranscriptChunk]],
-    ocr_results: list[OCRResult],
+    tracking_result: TrackingResult,
+    ui_tracking_config: UITrackingConfig | None = None,
+    ocr_config: OCRConfig | None = None,
 ) -> Timeline:
     """Merge pipeline outputs into a semantic timeline."""
-    ocr_by_segment = {result.segment_id: result.ui_text for result in ocr_results}
+    tracks = tracking_result.ui_element_tracks
     timeline_segments: list[TimelineSegment] = []
 
     for index, segment in enumerate(segments, start=1):
         transcript_lines = [
             chunk.text for chunk in aligned_transcripts.get(index - 1, [])
         ]
-        ui_elements = ocr_by_segment.get(index, [])
+        ui_elements = _ui_elements_for_segment(index, tracks)
 
         timeline_segments.append(
             TimelineSegment(
@@ -47,8 +51,32 @@ def build_timeline(
             )
         )
 
+    include_debug = False
+    if ui_tracking_config is not None:
+        include_debug = ui_tracking_config.debug
+    if ocr_config is not None and ocr_config.debug:
+        include_debug = True
+
     logger.info("Built timeline with %d segments", len(timeline_segments))
-    return Timeline(segments=timeline_segments)
+    return Timeline(
+        segments=timeline_segments,
+        ui_element_tracks=tracks,
+        tracking_debug=tracking_result.debug if include_debug else None,
+    )
+
+
+def _ui_elements_for_segment(
+    segment_id: int,
+    tracks: list[UIElementTrack],
+) -> list[str]:
+    """Collect matched target labels visible in a segment."""
+    labels: set[str] = set()
+    for track in tracks:
+        for observation in track.observations:
+            if observation.segment_id == segment_id:
+                labels.add(track.label)
+                break
+    return sorted(labels)
 
 
 def _infer_title(
@@ -56,7 +84,7 @@ def _infer_title(
     transcript_lines: list[str],
     ui_elements: list[str],
 ) -> str:
-    """Derive a segment title from OCR text or transcript."""
+    """Derive a segment title from matched UI elements or transcript."""
     if ui_elements:
         return _truncate(ui_elements[0], _MAX_TITLE_LENGTH)
     if transcript_lines:

@@ -13,8 +13,8 @@
       ],
       "ui_elements": [
         "Create Avatar",
-        "Upload Image",
-        "Generate"
+        "Generate",
+        "Upload Image"
       ]
     },
     {
@@ -29,11 +29,55 @@
         "Click Generate Video"
       ],
       "ui_elements": [
-        "Select Avatar",
-        "Script",
         "Generate Video",
-        "Preview"
+        "Preview",
+        "Script",
+        "Select Avatar"
       ]
     }
-  ]
+  ],
+  "ui_element_tracks": [
+    {
+      "element_id": "stop_button",
+      "label": "Stop",
+      "element_type": "button",
+      "observations": [
+        {
+          "timestamp": 30.0,
+          "segment_id": 1,
+          "bbox": [0.87, 0.89, 0.95, 0.95],
+          "center": [0.91, 0.92],
+          "width": 0.08,
+          "height": 0.06,
+          "confidence": 0.87,
+          "source": "ocr",
+          "matched_text": "Stop"
+        }
+      ],
+      "first_center": [0.91, 0.92],
+      "last_center": [0.91, 0.92],
+      "position_changed": false
+    }
+  ],
+  "tracking_debug": {
+    "matched_ocr": [
+      {
+        "raw_text": "Stop",
+        "normalized_text": "stop",
+        "region": "bottom_toolbar",
+        "element_id": "stop_button",
+        "match_type": "exact",
+        "confidence": 0.87
+      }
+    ],
+    "rejected_ocr": [
+      {
+        "raw_text": "n",
+        "normalized_text": "n",
+        "region": "top_header",
+        "rejection_reason": "single_char"
+      }
+    ],
+    "unmatched_observations": []
+  }
 }

@@ -1,0 +1,131 @@
+# Codebase second brain
+
+_Auto-synced: 2026-06-04T21:16:30.603344+00:00_
+_Regenerate: `python scripts/codebase_brain.py sync`_
+
+## Problem & goal
+
+Tutorial videos go stale when the product UI changes. Goal: preserve
+high-quality edited tutorials and minimize manual re-editing by diffing
+old vs new screen recordings and transferring edit intent.
+
+Full product spec: `plan.mb`.
+
+## Pipeline (plan.mb → code)
+
+| Step | Status | Where in code |
+|------|--------|---------------|
+| 1a Cut / transition detection | [x] done | video_segmentation/segmentation.py — detect_scenes (PySceneDetect) |
+| 1b Workflow section chunking + narration alignment | [~] partial | timeline.py + transcription.align_to_segments; no LLM workflow labels |
+| 1c Edited regions (zoom, crop, highlight, cursor focus) | [ ] planned | Not started — edit metadata on timeline |
+| 2 UI element targets (cursor, narration, zoom, overlays) | [~] partial | OCR ui_elements + transcript; no cursor/zoom/highlight geometry |
+| 3 Locate equivalent elements in new UI / video | [ ] planned | Needs old/new comparison pipeline |
+| 4 Semantic UI diffing (layout, rename, feature changes) | [ ] planned | OpenCV diff + LLM + optional DOM — not implemented |
+| 5 Editing intent transfer (re-anchor zoom/highlight/crop) | [ ] planned | Editing Intent Transfer Engine |
+| 6 Merge updated segments + voice clone | [ ] planned | Timeline merge + TTS — not implemented |
+| 7 Export to Akool / editable project data | [ ] planned | timeline.json only; no Akool/MCP export yet |
+
+## Core components
+
+| Component | Status | Modules |
+|-----------|--------|---------|
+| Video segmentation engine | [~] mvp | segmentation, transcription, frame_sampling, ocr, timeline, cli |
+| Semantic UI diff engine | [ ] planned | — |
+| Editing intent transfer engine | [ ] planned | — |
+| Narration sync / regeneration | [~] partial | transcription (Whisper only) |
+
+## What is implemented (MVP)
+
+- **CLI** (`video-segment`): `process`, `segment-only`, `transcribe-only`
+- **Phase 1** Scene cuts/fades → `SceneSegment` list
+- **Phase 2** Whisper transcript → `TranscriptChunk`, aligned per segment
+- **Phase 3** 1 FPS frame samples per segment (OpenCV)
+- **Phase 4** EasyOCR + layout heuristics → `OCRResult` / `ui_elements`
+- **Output** Semantic `timeline.json` (`Timeline` / `TimelineSegment`)
+
+## What is next (priority order)
+
+1. Edit metadata detection (zoom, crop, highlight, cursor) on timeline
+2. Semantic UI target map (geometry + narration/cursor links)
+3. Old/new video pairing + visual similarity / LLM UI matching
+4. Semantic UI diff categories + invalidation flags
+5. Editing intent transfer + segment replacement merge
+6. Narration diff, regeneration, voice clone
+7. Akool / video-editing MCP export (see plan.mb resources)
+
+## Module index
+
+### `video_segmentation/__init__.py`
+- Video Segmentation Engine for software tutorial videos.
+
+### `video_segmentation/cli.py`
+- CLI entrypoint for the video segmentation engine.
+- L38: `cli` (function) — Video Segmentation Engine for software tutorial videos.
+- L66: `process_command` (function) — Run the full segmentation pipeline on a tutorial video.
+- L110: `segment_only_command` (function) — Run Phase 1 scene segmentation only.
+- L138: `transcribe_only_command` (function) — Run Phase 2 transcription only.
+- L150: `main` (function)
+
+### `video_segmentation/config.py`
+- Configuration loading and defaults.
+- L13: `SegmentationConfig` (class)
+- L20: `TranscriptionConfig` (class)
+- L26: `FrameSamplingConfig` (class)
+- L32: `OCRConfig` (class)
+- L41: `OutputConfig` (class)
+- L46: `AppConfig` (class)
+- L66: `load_config` (function) — Load application configuration from YAML, falling back to defaults.
+
+### `video_segmentation/frame_sampling.py`
+- Phase 3: Frame sampling from video segments.
+- L17: `sample_frames` (function) — Sample frames at a fixed rate from each detected segment.
+
+### `video_segmentation/models.py`
+- Shared Pydantic data models for the video segmentation pipeline.
+- L8: `SceneSegment` (class) — A detected scene segment with start and end timestamps in seconds.
+- L15: `TranscriptChunk` (class) — A transcript chunk with timestamps and text.
+- L23: `FrameMetadata` (class) — Metadata for a sampled frame from a video segment.
+- L32: `OCRDetection` (class) — A single OCR or heuristic UI detection.
+- L42: `OCRResult` (class) — OCR-extracted UI text for a segment.
+- L50: `TimelineSegment` (class) — A fully enriched segment in the final timeline.
+- L62: `Timeline` (class) — Final semantic timeline output.
+
+### `video_segmentation/ocr.py`
+- Phase 4: OCR extraction from sampled frames.
+- L39: `extract_ocr` (function) — Extract and deduplicate UI text from sampled frames.
+- L281: `save_ocr_json` (function) — Save OCR results to JSON.
+
+### `video_segmentation/segmentation.py`
+- Phase 1: Automatic scene segmentation using PySceneDetect.
+- L18: `detect_scenes` (function) — Detect scene boundaries using hard cuts and fade transitions.
+- L61: `save_segments_json` (function) — Save raw scene segments to JSON.
+
+### `video_segmentation/timeline.py`
+- Final timeline assembly and export.
+- L23: `build_timeline` (function) — Merge pipeline outputs into a semantic timeline.
+- L81: `save_timeline` (function) — Serialize the timeline to JSON.
+
+### `video_segmentation/transcription.py`
+- Phase 2: Transcript extraction using OpenAI Whisper.
+- L18: `transcribe_video` (function) — Transcribe a video and return timestamped transcript chunks.
+- L55: `align_to_segments` (function) — Assign transcript chunks to scene segments by midpoint overlap.
+- L81: `save_transcript_json` (function) — Save transcript chunks to JSON.
+
+## All Python files (search index)
+
+- `scripts/codebase_brain.py` — SymbolInfo, FileIndex, build_index, render_codebase_mb, write_artifacts, search, cmd_sync, cmd_search, main
+- `video_segmentation/__init__.py` — (no public symbols)
+- `video_segmentation/cli.py` — cli, process_command, segment_only_command, transcribe_only_command, main
+- `video_segmentation/config.py` — SegmentationConfig, TranscriptionConfig, FrameSamplingConfig, OCRConfig, OutputConfig, AppConfig, load_config
+- `video_segmentation/frame_sampling.py` — sample_frames
+- `video_segmentation/models.py` — SceneSegment, TranscriptChunk, FrameMetadata, OCRDetection, OCRResult, TimelineSegment, Timeline
+- `video_segmentation/ocr.py` — extract_ocr, save_ocr_json
+- `video_segmentation/segmentation.py` — detect_scenes, save_segments_json
+- `video_segmentation/timeline.py` — build_timeline, save_timeline
+- `video_segmentation/transcription.py` — transcribe_video, align_to_segments, save_transcript_json
+
+## External resources (from plan)
+
+- [mcp-video](https://pypi.org/project/mcp-video/1.4.0/) — scene detect, timeline, crops
+- [video-editing-mcp](https://github.com/burningion/video-editing-mcp)
+- Autovio / text-to-video pipeline (metadata reference)

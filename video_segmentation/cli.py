@@ -12,7 +12,8 @@ warnings.filterwarnings("ignore", message=".*pin_memory.*MPS.*")
 
 from video_segmentation.config import load_config
 from video_segmentation.frame_sampling import sample_frames
-from video_segmentation.ocr import extract_ocr, save_ocr_json
+from video_segmentation.ocr import extract_ocr
+from video_segmentation.segment_merging import merge_short_segments
 from video_segmentation.segmentation import detect_scenes, save_segments_json
 from video_segmentation.timeline import build_timeline, save_timeline
 from video_segmentation.transcription import (
@@ -20,6 +21,7 @@ from video_segmentation.transcription import (
     save_transcript_json,
     transcribe_video,
 )
+from video_segmentation.ui_tracker import build_ui_tracks
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,10 @@ def process_command(
     logger.info("Starting full pipeline for %s", video_path)
 
     segments = detect_scenes(video_path, config.segmentation)
+    segments = merge_short_segments(
+        segments,
+        config.segmentation.min_segment_duration,
+    )
     transcript_chunks = transcribe_video(video_path, config.transcription)
     aligned = align_to_segments(transcript_chunks, segments)
     frames = sample_frames(
@@ -84,9 +90,16 @@ def process_command(
         config.frame_sampling,
         clean_output=not keep_frames,
     )
-    ocr_results = extract_ocr(frames, config.ocr)
+    _ocr_results, frame_results = extract_ocr(frames, config.ocr)
+    tracking_result = build_ui_tracks(frame_results, config.ui_tracking)
 
-    timeline = build_timeline(segments, aligned, ocr_results)
+    timeline = build_timeline(
+        segments,
+        aligned,
+        tracking_result,
+        ui_tracking_config=config.ui_tracking,
+        ocr_config=config.ocr,
+    )
     save_timeline(timeline, timeline_path)
     click.echo(f"Timeline written to {timeline_path}")
 
@@ -115,6 +128,10 @@ def segment_only_command(
     """Run Phase 1 scene segmentation only."""
     config = load_config(config_path if config_path.exists() else None)
     segments = detect_scenes(video_path, config.segmentation)
+    segments = merge_short_segments(
+        segments,
+        config.segmentation.min_segment_duration,
+    )
     save_segments_json(segments, output_path)
     click.echo(f"Segments written to {output_path}")
 

@@ -31,6 +31,9 @@ ENV/
 *.swp
 *.swo
 
+# Derived codebase index (regenerate via scripts/codebase_brain.py sync)
+.codebase/
+
 # Project outputs
 frames/
 output/

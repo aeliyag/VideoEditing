@@ -117,6 +117,24 @@ video_segmentation/
 └── timeline.py         # Timeline assembly and export
 ```
 
+## Codebase second brain
+
+`plan.mb` holds the product spec; `codebase.mb` is an auto-generated map of what is implemented vs planned, with a searchable symbol index.
+
+After code changes (new modules or functions), refresh the index:
+
+```bash
+python3 scripts/codebase_brain.py sync
+```
+
+Search for relevant files before editing:
+
+```bash
+python3 scripts/codebase_brain.py search "ocr ui elements" --update
+```
+
+`--update` runs `sync` first so results always match the current tree.
+
 ## Notes
 
 - The first run downloads Whisper and EasyOCR model weights, which can take several minutes.

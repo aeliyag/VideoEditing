@@ -1,0 +1,111 @@
+Overview 
+Problem: 
+Product tutorial videos quickly become outdated as UI changes are released. Current tutorial maintenance requires manual rerecording, editing, narration updates, and post-production work, which is resource intensive and difficult to scale for fast moving product teams. 
+
+Goal: preserve existing high-quality edited tutorials while minimizing manual re-editing effort.  
+
+Process flow 
+Input: old tutorial, new screen recording 
+Step 1: Segment tutorial, edited regions 
+Step 2: Detect UI Element targets in original video
+Step 3: Locate equivalent elements in new UI
+Step 5: For those elements add editing of zoom, highlighting, cropping, timing
+Step 6: merge back with original video tutorial
+Step 7: export draft tutorial as video, make changes in the Akool video production for further editing 
+
+Design of Segmentation Detection: 
+UI semantic diffing - categorize differences of UI regions 
+OpenCV  - detect visual differences
+LLM model analysis - describe visual differences 
+DOM-awarness 
+
+Step 1: Segment tutorial and detect edited regions 
+Dedect cuts / transitions 
+Identify tutorial workflow sections / features of the tool 
+Identify edited regions 
+Zooms 
+Crops
+Highlights
+Motion emphasis 
+Cursor focus 
+Output: 
+Timeline segmented map 
+Edit metadata
+Step 2: Detect UI element targets in original video 
+Identify important elements refereced by 
+Cursor 
+Narration 
+Zoom target
+Highlight overlaws 
+Output: semantic UI target map 
+
+Step 3: location equivalent or new elements in updated UI / new video 
+Compare original UI states against new UI states 
+Identify equivalent interface elements 
+Map old workflow -> new workflow 
+Tools 
+Multimodal LLM analysis 
+Visual similarity matching 
+DOM-aware mapping(?) 
+Step 4: Semantic UI diffing 
+Compare UI changes by category 
+What kind of change was made to an element 
+What is the new feature? 
+Ex. layout change, renaming element 
+
+Step 5: Reconstruct editing 
+Preserve aspects of original tutorial video behavior
+Transfer editing, re-anchor edits to updated UI positions, preserve pacing and visual consistency 
+
+Step 6: Merge Updated Segments into original tutorial 
+Replace outdated clips only 
+Clone voice for voice feature explanations 
+Output: updated draft tutorial timeline 
+
+Step 7: export into akool video production pipeline 
+Output to include editable timeline/ project data 
+
+
+Core technical compontnes 
+
+Video segmentation engine 
+Purpose to break tutorial into meaningful workflow sections 
+Tools: openCV, 
+Responsibilities: 
+Cut detection, scene segmentation, workflow chunking, narration alignment 
+Semantic UI diff engine 
+Compare old/new interface states 
+Determine if tutorial instructions are invalidated, classify UI changes 
+Tools: Open CV visual differentiation, OCR text extraction, multimodal LLM analysis 
+Editing Intent Transfer Engine 
+Detect cropped regions, highlights, zoom targets, timing emphasis 
+Reconstruction updated placements 
+Narration synchronization 
+Transcribe original narration 
+Identify outdated instructions 
+Regenerate modified narration
+Synthesized update audio 
+
+
+
+Resources: 
+VIDEO MCP - https://pypi.org/project/mcp-video/1.4.0/
+AI native video editing 
+Scene detection 
+Video analysis 
+Timeline editing
+Cropping
+Overlays 
+Transitions
+TEXT to VIDEO GENERATION - https://dev.to/serhatcck/autovio-open-source-video-generation-pipeline-402h?utm_source=chatgpt.com	
+Useful for scene cut and edits 
+Metadata /structure reference 
+
+
+
+https://github.com/burningion/video-editing-mcp
+https://www.reddit.com/r/mcp/comments/1hglp7n/creating_a_video_edit_using_my_mcp_server/
+
+
+
+Luma - https://lumalabs.ai/app 	

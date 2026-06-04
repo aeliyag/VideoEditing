@@ -2,6 +2,7 @@ segmentation:
   threshold: 27.0
   min_scene_len: 15
   fade_threshold: 12.0
+  min_segment_duration: 4.0
 transcription:
   model: base
   language: en
@@ -15,5 +16,54 @@ ocr:
   upscale_factor: 3.0
   debug: false
   debug_dir: ocr_debug
+ui_tracking:
+  mode: hybrid
+  keep_unmatched_ocr: false
+  min_label_length: 2
+  reject_single_char: true
+  reject_numeric_noise: true
+  fuzzy_match_threshold: 0.85
+  exact_match_only_max_length: 4
+  max_center_distance: 0.15
+  max_gap_seconds: 2.0
+  movement_threshold: 0.05
+  debug: true
+  target_elements:
+    - element_id: stop_button
+      labels: ["Stop"]
+      type: button
+      regions: ["bottom_toolbar", "right_controls"]
+    - element_id: camera_button
+      labels: ["camera", "camera button", "FaceTime HD Camera"]
+      type: button
+      regions: ["bottom_toolbar"]
+    - element_id: microphone_button
+      labels: ["microphone", "mic", "Open microphone"]
+      type: button
+      regions: ["bottom_toolbar"]
+    - element_id: credits_counter
+      labels: ["Credits", "credit"]
+      type: counter
+      regions: ["top_header"]
+    - element_id: result_library
+      labels: ["Result Library"]
+      type: nav_item
+      regions: ["top_header"]
+    - element_id: api_link
+      labels: ["API"]
+      type: nav_item
+      regions: ["top_header"]
+    - element_id: context_sales
+      labels: ["Context Sales"]
+      type: nav_item
+      regions: ["top_header"]
+    - element_id: upgrade_link
+      labels: ["Upgrade"]
+      type: nav_item
+      regions: ["top_header"]
+    - element_id: choose_face
+      labels: ["Choose Face"]
+      type: panel_action
+      regions: ["left_sidebar", "main_content"]
 output:
   output_file: timeline.json
