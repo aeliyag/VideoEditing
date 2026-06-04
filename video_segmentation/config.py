@@ -31,7 +31,10 @@ class FrameSamplingConfig:
 @dataclass
 class OCRConfig:
     languages: list[str] = field(default_factory=lambda: ["en"])
-    min_confidence: float = 0.5
+    min_confidence: float = 0.2
+    upscale_factor: float = 3.0
+    debug: bool = False
+    debug_dir: str = "ocr_debug"
 
 
 @dataclass

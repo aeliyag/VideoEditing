@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 
 import click
+
+warnings.filterwarnings("ignore", message=".*pin_memory.*MPS.*")
 
 from video_segmentation.config import load_config
 from video_segmentation.frame_sampling import sample_frames

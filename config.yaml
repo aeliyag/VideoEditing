@@ -11,6 +11,9 @@ frame_sampling:
 ocr:
   languages:
     - en
-  min_confidence: 0.5
+  min_confidence: 0.2
+  upscale_factor: 3.0
+  debug: false
+  debug_dir: ocr_debug
 output:
   output_file: timeline.json

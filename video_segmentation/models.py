@@ -29,11 +29,22 @@ class FrameMetadata(BaseModel):
     path: str
 
 
+class OCRDetection(BaseModel):
+    """A single OCR or heuristic UI detection."""
+
+    text: str
+    confidence: float
+    region: str
+    bbox: list = Field(default_factory=list)
+    source: str = "ocr"
+
+
 class OCRResult(BaseModel):
     """OCR-extracted UI text for a segment."""
 
     segment_id: int = Field(ge=1)
     ui_text: list[str] = Field(default_factory=list)
+    detections: list[OCRDetection] = Field(default_factory=list)
 
 
 class TimelineSegment(BaseModel):
