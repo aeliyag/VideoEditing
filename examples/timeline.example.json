@@ -1,0 +1,39 @@
+{
+  "segments": [
+    {
+      "id": 1,
+      "title": "Create Avatar",
+      "description": "Click Create Avatar Upload an image Click Generate to create your avatar",
+      "start_time": 25.3,
+      "end_time": 58.1,
+      "transcript": [
+        "Click Create Avatar",
+        "Upload an image",
+        "Click Generate to create your avatar"
+      ],
+      "ui_elements": [
+        "Create Avatar",
+        "Upload Image",
+        "Generate"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Select Avatar",
+      "description": "Now select your avatar Enter your script Click Generate Video",
+      "start_time": 72.1,
+      "end_time": 104.2,
+      "transcript": [
+        "Now select your avatar",
+        "Enter your script",
+        "Click Generate Video"
+      ],
+      "ui_elements": [
+        "Select Avatar",
+        "Script",
+        "Generate Video",
+        "Preview"
+      ]
+    }
+  ]
+}
