@@ -1,14 +1,9 @@
-# Video Segmentation Engine
+# Video Editing Toolkit
 
-A Python-based MVP pipeline that processes software tutorial videos and outputs a structured semantic timeline. The timeline describes video segments, transcript alignment, and important UI elements appearing within each segment.
+A Python project for editing software tutorial videos. It includes:
 
-## Features
-
-- **Phase 1 — Scene Segmentation**: Detect hard cuts, fades, and transitions with PySceneDetect
-- **Phase 2 — Transcription**: Extract timestamped transcripts with OpenAI Whisper
-- **Phase 3 — Frame Sampling**: Capture representative frames at 1 FPS per segment
-- **Phase 4 — OCR**: Extract visible UI text with EasyOCR
-- **Timeline Export**: Produce a final semantic JSON timeline
+1. **Video Highlight Editor** — draw timed red-box outlines in a Streamlit UI and export them baked into the video
+2. **Video Segmentation Engine** — CLI pipeline for scene detection, transcription, OCR, and semantic timeline export
 
 ## Requirements
 
@@ -24,7 +19,33 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Configuration
+## Video Highlight Editor
+
+Draw red rectangle outlines on a video, edit them on a timeline, and export a new video with the boxes burned in.
+
+```bash
+streamlit run app.py
+```
+
+### Workflow
+
+1. Upload a video (`.mp4`, `.mov`, or `.avi`)
+2. Add highlights by setting a start time, optional end time, and drawing a rectangle on a frame
+3. Edit highlights in the table (add, remove, or adjust timing and coordinates)
+4. Preview at any timestamp to see which boxes are active
+5. Click **Generate highlighted video** to export `highlighted_output.mp4`
+
+### Timing rules
+
+- Every highlight requires a **start time**
+- **End time is optional** — leave it blank to keep the highlight visible from its start time through the end of the video
+- If an end time is set, the highlight is visible only while `start_time <= t <= end_time`
+
+See [`examples/highlight_timeline.example.json`](examples/highlight_timeline.example.json) for the JSON timeline format.
+
+## Video Segmentation Engine
+
+### Configuration
 
 Edit [`config.yaml`](config.yaml) to customize pipeline behavior:
 
@@ -46,8 +67,6 @@ ocr:
 output:
   output_file: timeline.json
 ```
-
-## Usage
 
 ### Full pipeline
 
@@ -76,7 +95,7 @@ video-segment transcribe-only tutorial.mp4 --output transcript.json
 
 ## Output
 
-The full pipeline produces a semantic timeline JSON. Segment titles and descriptions are inferred from OCR text and transcript content:
+The segmentation pipeline produces a semantic timeline JSON. Segment titles and descriptions are inferred from OCR text and transcript content:
 
 ```json
 {
@@ -106,18 +125,27 @@ See [`examples/timeline.example.json`](examples/timeline.example.json) for a com
 ## Project Structure
 
 ```
+effects/
+├── clip.py                 # Video clip abstraction
+├── highlight.py            # Red-box overlay effect
+├── highlight_timeline.py   # Highlight event models
+└── zoom.py                 # Legacy zoom effect (standalone demo)
+
 video_segmentation/
-├── cli.py              # CLI entrypoint
-├── config.py           # YAML configuration loading
-├── models.py           # Shared Pydantic data models
-├── segmentation.py     # Phase 1: PySceneDetect
-├── transcription.py    # Phase 2: Whisper
-├── frame_sampling.py   # Phase 3: OpenCV frame extraction
-├── ocr.py              # Phase 4: EasyOCR
-└── timeline.py         # Timeline assembly and export
+├── cli.py                  # CLI entrypoint
+├── config.py               # YAML configuration loading
+├── models.py               # Shared Pydantic data models
+├── segmentation.py         # Phase 1: PySceneDetect
+├── transcription.py        # Phase 2: Whisper
+├── frame_sampling.py       # Phase 3: OpenCV frame extraction
+├── ocr.py                  # Phase 4: EasyOCR
+└── timeline.py             # Timeline assembly and export
+
+app.py                      # Streamlit highlight editor
+render.py                   # Video render utilities
 ```
 
 ## Notes
 
-- The first run downloads Whisper and EasyOCR model weights, which can take several minutes.
+- The first run of the segmentation pipeline downloads Whisper and EasyOCR model weights, which can take several minutes.
 - Sampled frames are stored under `frames/` by default and removed after processing unless `--keep-frames` is passed.
