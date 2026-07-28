@@ -36,6 +36,7 @@ frames/
 output/
 *.json
 !examples/**/*.json
+!frontend/**/*.json
 
 # OS
 .DS_Store
