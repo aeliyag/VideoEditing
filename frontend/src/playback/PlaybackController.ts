@@ -1,6 +1,8 @@
 import type { ProjectDocument } from '../types/project'
 import type { MediaStore } from '../types/project'
+import type { TimelineClip } from '../types/project'
 import {
+  audioClipAtTime,
   clipAtTime,
   clipTimelineEnd,
   clampPlayhead,
@@ -10,8 +12,13 @@ import {
 
 export type PlaybackListener = (timelineTime: number, isPlaying: boolean) => void
 
+function audioClipSyncKey(clip: TimelineClip): string {
+  return `${clip.id}:${clip.timelineStart}:${clip.sourceStart}:${clip.sourceEnd}`
+}
+
 export class PlaybackController {
   private video: HTMLVideoElement | null = null
+  private audio: HTMLAudioElement | null = null
   private document: ProjectDocument | null = null
   private mediaStore: MediaStore = new Map()
   private timelineTime = 0
@@ -20,7 +27,8 @@ export class PlaybackController {
   private lastWallTime = 0
   private activeSourceId: string | null = null
   private activeClipId: string | null = null
-  private listeners = new Set<PlaybackListener>()
+  private activeAudioSourceId: string | null = null
+  private activeAudioSyncKey: string | null = null
 
   setVideoElement(video: HTMLVideoElement | null): void {
     this.video = video
@@ -29,12 +37,23 @@ export class PlaybackController {
     }
   }
 
+  setAudioElement(audio: HTMLAudioElement | null): void {
+    this.audio = audio
+    if (audio && this.document) {
+      void this.syncAudioToTimeline(this.timelineTime, true)
+    }
+  }
+
   setProject(document: ProjectDocument, mediaStore: MediaStore): void {
     this.document = document
     this.mediaStore = mediaStore
     this.timelineTime = clampPlayhead(this.timelineTime, document)
+    this.activeAudioSyncKey = null
     if (this.video) {
       void this.syncVideoToTimeline(this.timelineTime, true)
+    }
+    if (this.audio) {
+      void this.syncAudioToTimeline(this.timelineTime, true)
     }
     this.emit()
   }
@@ -44,6 +63,8 @@ export class PlaybackController {
     listener(this.timelineTime, this.playing)
     return () => this.listeners.delete(listener)
   }
+
+  private listeners = new Set<PlaybackListener>()
 
   getTimelineTime(): number {
     return this.timelineTime
@@ -59,6 +80,7 @@ export class PlaybackController {
     }
     this.timelineTime = clampPlayhead(timelineTime, this.document)
     void this.syncVideoToTimeline(this.timelineTime, true)
+    void this.syncAudioToTimeline(this.timelineTime, true)
     this.emit()
   }
 
@@ -69,12 +91,18 @@ export class PlaybackController {
     if (this.timelineTime >= totalDuration(this.document)) {
       this.timelineTime = 0
       void this.syncVideoToTimeline(this.timelineTime, true)
+      void this.syncAudioToTimeline(this.timelineTime, true)
     }
     this.playing = true
     this.lastWallTime = performance.now()
     void this.syncVideoToTimeline(this.timelineTime, true).then(() => {
       if (this.playing) {
         void this.video?.play()
+      }
+    })
+    void this.syncAudioToTimeline(this.timelineTime, true).then(() => {
+      if (this.playing) {
+        void this.audio?.play()
       }
     })
     this.startLoop()
@@ -85,6 +113,7 @@ export class PlaybackController {
     this.playing = false
     this.stopLoop()
     this.video?.pause()
+    this.audio?.pause()
     this.emit()
   }
 
@@ -100,6 +129,7 @@ export class PlaybackController {
     this.pause()
     this.listeners.clear()
     this.video = null
+    this.audio = null
   }
 
   private emit(): void {
@@ -130,8 +160,6 @@ export class PlaybackController {
           decodedTimelineTime >= activeClip.timelineStart &&
           decodedTimelineTime <= clipTimelineEnd(activeClip) + 0.05
         ) {
-          // The decoded media clock is authoritative, so the playhead cannot
-          // drift away from the frame currently shown in the preview.
           next = Math.max(this.timelineTime, decodedTimelineTime)
         }
       }
@@ -139,12 +167,14 @@ export class PlaybackController {
         next = max
         this.timelineTime = next
         void this.syncVideoToTimeline(next, false)
+        void this.syncAudioDuringPlayback(next)
         this.pause()
         this.emit()
         return
       }
       this.timelineTime = next
       void this.syncVideoToTimeline(next, false)
+      void this.syncAudioDuringPlayback(next)
       this.emit()
       this.rafId = requestAnimationFrame(tick)
     }
@@ -200,6 +230,94 @@ export class PlaybackController {
     }
     if (this.playing && video.paused) {
       void video.play()
+    }
+  }
+
+  /** Lightweight path while playing — avoid seeking HTMLAudio every frame. */
+  private syncAudioDuringPlayback(timelineTime: number): void {
+    const audio = this.audio
+    const doc = this.document
+    if (!audio || !doc || !this.playing) {
+      return
+    }
+
+    const clip = audioClipAtTime(doc, timelineTime)
+    if (!clip) {
+      if (this.activeAudioSyncKey !== null) {
+        audio.pause()
+        this.activeAudioSyncKey = null
+        this.activeAudioSourceId = null
+      }
+      return
+    }
+
+    const syncKey = audioClipSyncKey(clip)
+    if (syncKey !== this.activeAudioSyncKey) {
+      void this.syncAudioToTimeline(timelineTime, true)
+      return
+    }
+
+    const clipEnd = clipTimelineEnd(clip)
+    if (timelineTime >= clipEnd - 0.03 || audio.currentTime >= clip.sourceEnd - 0.03) {
+      audio.pause()
+      return
+    }
+
+    if (audio.paused) {
+      void audio.play()
+    }
+  }
+
+  private async syncAudioToTimeline(
+    timelineTime: number,
+    forceSeek: boolean,
+  ): Promise<void> {
+    const audio = this.audio
+    const doc = this.document
+    if (!audio || !doc) {
+      return
+    }
+
+    const clip = audioClipAtTime(doc, timelineTime)
+    if (!clip) {
+      audio.pause()
+      this.activeAudioSyncKey = null
+      this.activeAudioSourceId = null
+      return
+    }
+
+    const asset = this.mediaStore.get(clip.sourceId)
+    if (!asset) {
+      return
+    }
+
+    const syncKey = audioClipSyncKey(clip)
+    const clipChanged = this.activeAudioSyncKey !== syncKey
+
+    if (this.activeAudioSourceId !== clip.sourceId) {
+      this.activeAudioSourceId = clip.sourceId
+      audio.src = asset.objectUrl
+      await new Promise<void>((resolve) => {
+        const onLoaded = () => {
+          audio.removeEventListener('loadedmetadata', onLoaded)
+          resolve()
+        }
+        audio.addEventListener('loadedmetadata', onLoaded)
+      })
+    }
+
+    const sourceTime = timelineToSourceTime(clip, timelineTime)
+    if (forceSeek || clipChanged) {
+      audio.currentTime = sourceTime
+    } else if (Math.abs(audio.currentTime - sourceTime) > 0.35) {
+      // User scrubbed or the timeline jumped — one corrective seek only.
+      audio.currentTime = sourceTime
+    }
+
+    this.activeAudioSyncKey = syncKey
+
+    if (this.playing && audio.paused) {
+      void audio.play()
     }
   }
 }

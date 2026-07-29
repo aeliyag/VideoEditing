@@ -11,6 +11,7 @@ import {
 } from 'react'
 
 import { exportProjectToMp4 } from '../export/ExportEngine'
+import { generateAkoolTts } from '../akool/client'
 import { probeMediaFile, revokeMediaAsset } from '../media/probe'
 import { playbackController } from '../playback/PlaybackController'
 import type { MediaAsset, MediaStore } from '../types/project'
@@ -36,6 +37,12 @@ interface ProjectContextValue {
   dispatch: React.Dispatch<ProjectAction>
   mediaStore: MediaStore
   importVideo: (file: File) => Promise<void>
+  addTtsAudio: (blob: Blob, fileName: string, timelineStart: number) => Promise<void>
+  generateTtsAndAdd: (params: {
+    inputText: string
+    voiceId: string
+    rate: string
+  }) => Promise<void>
   exportVideo: () => Promise<void>
   exportProgress: number
   exportMessage: string
@@ -135,6 +142,35 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'IMPORT_MEDIA', asset })
     setLibraryMessage('')
   }, [])
+
+  const addTtsAudio = useCallback(
+    async (blob: Blob, fileName: string, timelineStart: number) => {
+      const file = new File([blob], fileName, { type: blob.type || 'audio/mpeg' })
+      const asset = await probeMediaFile(file)
+      setMediaStore((prev) => {
+        const next = new Map(prev)
+        next.set(asset.id, asset)
+        return next
+      })
+      dispatch({ type: 'ADD_TTS_CLIP', asset, timelineStart })
+      setLibraryMessage('Added TTS clip to timeline.')
+    },
+    [],
+  )
+
+  const generateTtsAndAdd = useCallback(
+    async (params: { inputText: string; voiceId: string; rate: string }) => {
+      const blob = await generateAkoolTts({
+        inputText: params.inputText,
+        voiceId: params.voiceId,
+        rate: params.rate,
+      })
+      const timelineStart = state.ui.playhead
+      const safeName = `tts_${Date.now()}.mp3`
+      await addTtsAudio(blob, safeName, timelineStart)
+    },
+    [addTtsAudio, state.ui.playhead],
+  )
 
   const exportVideo = useCallback(async () => {
     setIsExporting(true)
@@ -262,6 +298,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       dispatch,
       mediaStore,
       importVideo,
+      addTtsAudio,
+      generateTtsAndAdd,
       exportVideo,
       exportProgress,
       exportMessage,
@@ -287,6 +325,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       state,
       mediaStore,
       importVideo,
+      addTtsAudio,
+      generateTtsAndAdd,
       exportVideo,
       exportProgress,
       exportMessage,

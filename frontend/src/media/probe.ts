@@ -26,6 +26,52 @@ async function fileHasAudioTrack(file: File): Promise<boolean> {
 }
 
 export function probeMediaFile(file: File): Promise<MediaAsset> {
+  const isLikelyAudio =
+    file.type.startsWith('audio/') ||
+    /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name)
+
+  if (isLikelyAudio) {
+    return probeAudioFile(file)
+  }
+  return probeVideoFile(file)
+}
+
+function probeAudioFile(file: File): Promise<MediaAsset> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file)
+    const audio = document.createElement('audio')
+    audio.preload = 'metadata'
+    audio.src = objectUrl
+
+    const cleanup = () => {
+      audio.removeAttribute('src')
+      audio.load()
+    }
+
+    audio.onloadedmetadata = () => {
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0
+      cleanup()
+      resolve({
+        id: uuidv4(),
+        file,
+        objectUrl,
+        duration,
+        fps: 0,
+        width: 0,
+        height: 0,
+        hasAudio: true,
+      })
+    }
+
+    audio.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      cleanup()
+      reject(new Error(`Unable to read audio metadata for ${file.name}`))
+    }
+  })
+}
+
+function probeVideoFile(file: File): Promise<MediaAsset> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file)
     const video = document.createElement('video')

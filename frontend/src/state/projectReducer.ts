@@ -1,8 +1,11 @@
 import type { ProjectDocument, EditorUiState, MediaAsset, FrameRect } from '../types/project'
 import {
   addClipFromSource,
+  addAudioClipFromSource,
   createEmptyProject,
   deleteClip,
+  ensureProjectTracks,
+  moveAudioClip,
   reorderClipByDrag,
   splitAtPlayhead,
   trimClip,
@@ -23,6 +26,7 @@ import {
 
 export type ProjectAction =
   | { type: 'IMPORT_MEDIA'; asset: MediaAsset }
+  | { type: 'ADD_TTS_CLIP'; asset: MediaAsset; timelineStart: number }
   | { type: 'SET_PLAYHEAD'; time: number }
   | { type: 'SELECT_CLIP'; clipId: string | null }
   | { type: 'SET_PLAYING'; isPlaying: boolean }
@@ -30,6 +34,7 @@ export type ProjectAction =
   | { type: 'DELETE_SELECTED' }
   | { type: 'TRIM_CLIP'; clipId: string; side: 'start' | 'end'; edgeTimelineTime: number; mediaDuration: number; fps: number }
   | { type: 'REORDER_CLIP'; clipId: string; provisionalTimelineStart: number }
+  | { type: 'MOVE_AUDIO_CLIP'; clipId: string; timelineStart: number }
   | {
       type: 'SAVE_CLIP_CAMERA'
       clipId: string
@@ -76,7 +81,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'LOAD_PROJECT':
       return {
-        document: action.document,
+        document: ensureProjectTracks(action.document),
         ui: {
           playhead: action.playhead,
           selectedClipId: action.selectedClipId,
@@ -92,6 +97,24 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           playhead: 0,
           selectedClipId: document.tracks[0]?.clips[0]?.id ?? null,
           isPlaying: false,
+        },
+      }
+    }
+
+    case 'ADD_TTS_CLIP': {
+      const withTracks = ensureProjectTracks(state.document)
+      const document = addAudioClipFromSource(
+        withTracks,
+        action.asset,
+        action.timelineStart,
+      )
+      const audioTrack = document.tracks.find((t) => t.kind === 'audio')
+      const newClip = audioTrack?.clips[audioTrack.clips.length - 1]
+      return {
+        document,
+        ui: {
+          ...state.ui,
+          selectedClipId: newClip?.id ?? state.ui.selectedClipId,
         },
       }
     }
@@ -118,7 +141,12 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       }
 
     case 'SPLIT_AT_PLAYHEAD': {
-      const document = splitAtPlayhead(state.document, state.ui.playhead, action.fps)
+      const document = splitAtPlayhead(
+        state.document,
+        state.ui.playhead,
+        action.fps,
+        state.ui.selectedClipId,
+      )
       return {
         document,
         ui: {
@@ -168,6 +196,21 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         state.document,
         action.clipId,
         action.provisionalTimelineStart,
+      )
+      return {
+        document,
+        ui: {
+          ...state.ui,
+          playhead: clampPlayhead(state.ui.playhead, document),
+        },
+      }
+    }
+
+    case 'MOVE_AUDIO_CLIP': {
+      const document = moveAudioClip(
+        state.document,
+        action.clipId,
+        action.timelineStart,
       )
       return {
         document,

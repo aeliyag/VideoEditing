@@ -3,7 +3,7 @@ import { fetchFile, toBlobURL } from '@ffmpeg/util'
 
 import type { ProjectDocument, MediaStore, TimelineClip } from '../types/project'
 import { isRedBoxEffect } from '../types/project'
-import { getVideoTrack, sortedClips, clipDuration } from '../timeline/helpers'
+import { getVideoTrack, getAudioTrack, sortedClips, clipDuration, totalDuration } from '../timeline/helpers'
 import {
   getCameraEffect,
   resolveFrameRect,
@@ -39,7 +39,23 @@ async function getFfmpeg(onLog?: (message: string) => void): Promise<FFmpeg> {
   return loadPromise
 }
 
-function uniqueSourceIds(doc: ProjectDocument): string[] {
+function isAudioOnlyAsset(asset: { width: number; height: number }): boolean {
+  return asset.width === 0 && asset.height === 0
+}
+
+function stageFileName(index: number, asset: { width: number; height: number }): string {
+  return isAudioOnlyAsset(asset) ? `input_${index}.mp3` : `input_${index}.mp4`
+}
+
+function uniqueAudioSourceIds(doc: ProjectDocument): string[] {
+  const track = getAudioTrack(doc)
+  if (!track) {
+    return []
+  }
+  return [...new Set(sortedClips(track).map((c) => c.sourceId))]
+}
+
+function uniqueVideoSourceIds(doc: ProjectDocument): string[] {
   const track = getVideoTrack(doc)
   if (!track) {
     return []
@@ -126,8 +142,11 @@ export async function exportProjectToMp4(
   const ffmpeg = await getFfmpeg((msg) => onProgress?.(0.1, msg))
 
   const clips = sortedClips(track)
-  const sourceIds = uniqueSourceIds(doc)
+  const videoSourceIds = uniqueVideoSourceIds(doc)
+  const audioSourceIds = uniqueAudioSourceIds(doc)
+  const allSourceIds = [...videoSourceIds, ...audioSourceIds]
   const inputIndexBySource = new Map<string, number>()
+  const stagedNames: string[] = []
   const outputName = 'output.mp4'
 
   try {
@@ -136,19 +155,23 @@ export async function exportProjectToMp4(
     // The first export has no previous output.
   }
 
-  for (let i = 0; i < sourceIds.length; i++) {
-    const sourceId = sourceIds[i]!
+  for (let i = 0; i < allSourceIds.length; i++) {
+    const sourceId = allSourceIds[i]!
     const asset = mediaStore.get(sourceId)
     if (!asset) {
       throw new Error('Missing media for export.')
     }
-    const name = `input_${i}.mp4`
+    const name = stageFileName(i, asset)
     await ffmpeg.writeFile(name, await fetchFile(asset.file))
+    stagedNames.push(name)
     inputIndexBySource.set(sourceId, i)
-    onProgress?.(0.1 + (0.2 * (i + 1)) / sourceIds.length, `Staged ${asset.file.name}`)
+    onProgress?.(0.1 + (0.2 * (i + 1)) / allSourceIds.length, `Staged ${asset.file.name}`)
   }
 
-  const hasAudio = clips.some((c) => mediaStore.get(c.sourceId)?.hasAudio)
+  const hasVideoAudio = clips.some((c) => mediaStore.get(c.sourceId)?.hasAudio)
+  const audioTrack = getAudioTrack(doc)
+  const ttsClips = audioTrack ? sortedClips(audioTrack) : []
+  const exportLength = totalDuration(doc)
   const filterParts: string[] = []
   const concatInputs: string[] = []
 
@@ -190,7 +213,7 @@ export async function exportProjectToMp4(
     }
     concatInputs.push(`[${vOut}]`)
 
-    if (hasAudio) {
+    if (hasVideoAudio) {
       const aLabel = `a${index}`
       filterParts.push(
         `[${inputIndex}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[${aLabel}]`,
@@ -200,21 +223,50 @@ export async function exportProjectToMp4(
   })
 
   const n = clips.length
-  if (hasAudio) {
+  if (hasVideoAudio) {
     filterParts.push(`${concatInputs.join('')}concat=n=${n}:v=1:a=1[outv][outa]`)
   } else {
     filterParts.push(`${concatInputs.join('')}concat=n=${n}:v=1:a=0[outv]`)
   }
 
+  const mixInputs: string[] = []
+  if (ttsClips.length > 0) {
+    if (hasVideoAudio) {
+      mixInputs.push('[outa]')
+    } else {
+      filterParts.push(
+        `anullsrc=r=44100:cl=stereo:d=${Math.max(exportLength, 0.01)}[silentbed]`,
+      )
+      mixInputs.push('[silentbed]')
+    }
+
+    ttsClips.forEach((clip, index) => {
+      const inputIndex = inputIndexBySource.get(clip.sourceId)!
+      const delayMs = Math.max(0, Math.round(clip.timelineStart * 1000))
+      const label = `tts${index}`
+      filterParts.push(
+        `[${inputIndex}:a]atrim=start=${clip.sourceStart}:end=${clip.sourceEnd},` +
+          `asetpts=PTS-STARTPTS,adelay=${delayMs}|${delayMs}[${label}]`,
+      )
+      mixInputs.push(`[${label}]`)
+    })
+
+    filterParts.push(
+      `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0[aout]`,
+    )
+  }
+
   const filterComplex = filterParts.join(';')
   const args = [
-    ...sourceIds.flatMap((_, i) => ['-i', `input_${i}.mp4`]),
+    ...stagedNames.flatMap((name) => ['-i', name]),
     '-filter_complex',
     filterComplex,
     '-map',
     '[outv]',
   ]
-  if (hasAudio) {
+  if (ttsClips.length > 0) {
+    args.push('-map', '[aout]', '-c:a', 'aac')
+  } else if (hasVideoAudio) {
     args.push('-map', '[outa]', '-c:a', 'aac')
   }
   args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputName)
@@ -236,9 +288,9 @@ export async function exportProjectToMp4(
   }
   onProgress?.(1, 'Done')
 
-  for (let i = 0; i < sourceIds.length; i++) {
+  for (const name of stagedNames) {
     try {
-      await ffmpeg.deleteFile(`input_${i}.mp4`)
+      await ffmpeg.deleteFile(name)
     } catch {
       // Cleanup must not invalidate a completed export.
     }

@@ -1,5 +1,26 @@
 # React + TypeScript + Vite
 
+## Video timeline editor
+
+```bash
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** (Chromium recommended for export).
+
+### Akool text-to-speech
+
+Copy `frontend/.env.example` to `frontend/.env` and set your server-side key:
+
+```
+AKOOL_API_KEY=your_key_here
+```
+
+Get the key from [Akool](https://akool.com) → API icon → **API Credentials**. The dev server proxies `/api/akool/*` so the key never ships to the browser.
+
+---
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 Currently, two official plugins are available:

@@ -132,7 +132,13 @@ body {
 .toolbar-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 0.5rem;
+}
+
+.toolbar-actions .btn {
+  flex: 0 0 auto;
+  align-self: flex-start;
 }
 
 .toolbar-meta {
@@ -243,17 +249,20 @@ body {
 
 .preview-stage {
   position: relative;
-  width: 100%;
-  max-height: 420px;
+  max-width: 100%;
+  max-height: min(420px, 70vh);
+  width: min(100%, calc(min(420px, 70vh) * var(--preview-aspect, 1.777)));
+  aspect-ratio: var(--preview-aspect, 16 / 9);
   overflow: hidden;
   background: #000;
+  flex-shrink: 0;
 }
 
 .preview-video {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: fill;
+  object-fit: contain;
 }
 
 .preview-placeholder {
@@ -592,4 +601,100 @@ body {
     height: auto;
     max-width: 100%;
   }
+}
+
+.timeline-track-with-audio {
+  height: 168px;
+}
+
+.audio-row-label {
+  top: 126px;
+}
+
+.timeline-clip-audio {
+  top: 142px;
+  height: 22px;
+  background: #234a38;
+  border-color: #3d8a62;
+  font-size: 0.68rem;
+}
+
+.tts-panel-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  gap: 0.5rem;
+}
+
+.tts-panel {
+  width: 100%;
+  max-width: 520px;
+  padding: 0.75rem;
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tts-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.tts-field-grow {
+  flex: 1;
+}
+
+.tts-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tts-textarea,
+.tts-select {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #12151c;
+  color: inherit;
+}
+
+.tts-textarea {
+  resize: vertical;
+  min-height: 4rem;
+}
+
+.tts-error {
+  color: #ff6b6b;
+  font-size: 0.78rem;
+  margin: 0 0 0.5rem;
+}
+
+.tts-voice-sample-btn {
+  margin-bottom: 0.5rem;
+}
+
+.tts-preview-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  background: #12151c;
+  border: 1px solid var(--border);
+}
+
+.tts-preview-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tts-preview-audio {
+  width: 100%;
+  height: 2rem;
 }

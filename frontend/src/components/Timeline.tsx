@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { useProject } from '../state/ProjectProvider'
-import { getVideoTrack, sortedClips, clipTimelineEnd } from '../timeline/helpers'
+import { getVideoTrack, getAudioTrack, sortedClips, totalDuration } from '../timeline/helpers'
 import { playbackController } from '../playback/PlaybackController'
 import { TimelineClipBlock } from './TimelineClip'
+import { AudioTimelineClip } from './AudioTimelineClip'
 import { AnnotationTimelineItem } from './AnnotationTimelineItem'
 import { isRedBoxEffect } from '../types/project'
 
@@ -15,8 +16,10 @@ export function Timeline() {
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
 
   const track = getVideoTrack(state.document)
+  const audioTrack = getAudioTrack(state.document)
   const clips = track ? sortedClips(track) : []
-  const duration = clips.reduce((max, c) => Math.max(max, clipTimelineEnd(c)), 0)
+  const audioClips = audioTrack ? sortedClips(audioTrack) : []
+  const duration = totalDuration(state.document)
   const width = Math.max(duration * PX_PER_SECOND, 400)
 
   const timeFromClientX = useCallback(
@@ -83,6 +86,8 @@ export function Timeline() {
     )
   }
 
+  const hasAudioLane = audioClips.length > 0
+
   return (
     <section className="timeline-panel">
       <div className="timeline-ruler" style={{ width }}>
@@ -94,7 +99,7 @@ export function Timeline() {
       </div>
       <div
         ref={trackRef}
-        className="timeline-track"
+        className={`timeline-track ${hasAudioLane ? 'timeline-track-with-audio' : ''}`}
         style={{ width }}
         onPointerDown={onTrackPointerDown}
       >
@@ -149,6 +154,38 @@ export function Timeline() {
             />
           )),
         )}
+        {hasAudioLane && <div className="annotation-row-label audio-row-label">Audio</div>}
+        {audioClips.map((clip) => {
+          const asset = mediaStore.get(clip.sourceId)
+          return (
+            <AudioTimelineClip
+              key={clip.id}
+              clip={clip}
+              pxPerSecond={PX_PER_SECOND}
+              selected={state.ui.selectedClipId === clip.id}
+              mediaDuration={asset?.duration ?? 0}
+              fps={asset?.fps && asset.fps > 0 ? asset.fps : 30}
+              onSelect={() => dispatch({ type: 'SELECT_CLIP', clipId: clip.id })}
+              onTrim={(side, edgeTimelineTime) =>
+                dispatch({
+                  type: 'TRIM_CLIP',
+                  clipId: clip.id,
+                  side,
+                  edgeTimelineTime,
+                  mediaDuration: asset?.duration ?? 0,
+                  fps: asset?.fps && asset.fps > 0 ? asset.fps : 30,
+                })
+              }
+              onMove={(timelineStart) =>
+                dispatch({
+                  type: 'MOVE_AUDIO_CLIP',
+                  clipId: clip.id,
+                  timelineStart,
+                })
+              }
+            />
+          )
+        })}
         <div
           className="playhead"
           style={{ left: playheadLeft }}
@@ -163,7 +200,8 @@ export function Timeline() {
         />
       </div>
       <p className="timeline-hint">
-        Click to seek · drag clips to reorder · trim video and red-box bars by their edges
+        Click to seek · drag video clips to reorder · drag voice clips to reposition · trim
+        clip edges (video, voice, red-box)
       </p>
     </section>
   )

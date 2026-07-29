@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 
 import { playbackController } from '../playback/PlaybackController'
+import { TtsPanel } from './TtsPanel'
 import { useProject } from '../state/ProjectProvider'
 import { getVideoTrack, sortedClips } from '../timeline/helpers'
 
@@ -165,6 +166,7 @@ export function Toolbar() {
           {state.ui.isPlaying ? 'Pause' : 'Play'}
         </button>
       </div>
+      <TtsPanel />
       {(isExporting || exportMessage.startsWith('Export failed')) && (
         <div className="export-status">
           {isExporting && (

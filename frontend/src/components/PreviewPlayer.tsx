@@ -10,7 +10,7 @@ import {
   clampFreeRect,
   cropRectToVideoTransform,
 } from '../camera/frames'
-import { clipAtTime, findClipById } from '../timeline/helpers'
+import { clipAtTime, findClipById, mediaRectInContainer } from '../timeline/helpers'
 import { playbackController } from '../playback/PlaybackController'
 import { useProject } from '../state/ProjectProvider'
 import type { FrameRect } from '../types/project'
@@ -205,6 +205,7 @@ export function PreviewPlayer() {
     closeEffectEditor,
   } = useProject()
   const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [cameraSlot, setCameraSlot] = useState<CameraSlot>('start')
   const [startDraft, setStartDraft] = useState<{ rect: FrameRect; name: string }>({
@@ -248,6 +249,11 @@ export function PreviewPlayer() {
     playbackController.setVideoElement(videoRef.current)
     return () => playbackController.setVideoElement(null)
   }, [primaryAsset?.id])
+
+  useEffect(() => {
+    playbackController.setAudioElement(audioRef.current)
+    return () => playbackController.setAudioElement(null)
+  }, [])
 
   useEffect(() => {
     if (!selectedClip) {
@@ -298,14 +304,15 @@ export function PreviewPlayer() {
     if (!stage) {
       return
     }
-    // Video uses object-fit: fill and fills the stage, so crop coords map 1:1.
-    setDisplayRect({
-      x: 0,
-      y: 0,
-      width: stage.clientWidth,
-      height: stage.clientHeight,
-    })
-  }, [])
+    setDisplayRect(
+      mediaRectInContainer(
+        stage.clientWidth,
+        stage.clientHeight,
+        sourceWidth,
+        sourceHeight,
+      ),
+    )
+  }, [sourceWidth, sourceHeight])
 
   useEffect(() => {
     updateDisplayRect()
@@ -371,9 +378,14 @@ export function PreviewPlayer() {
         : undefined
 
   const aspect =
-    primaryAsset && primaryAsset.width > 0
-      ? `${primaryAsset.width} / ${primaryAsset.height}`
-      : '16 / 9'
+    primaryAsset && primaryAsset.width > 0 && primaryAsset.height > 0
+      ? primaryAsset.width / primaryAsset.height
+      : 16 / 9
+
+  const stageStyle = {
+    aspectRatio: `${primaryAsset?.width ?? 16} / ${primaryAsset?.height ?? 9}`,
+    ['--preview-aspect' as string]: String(aspect),
+  } as React.CSSProperties
 
   const saveCamera = () => {
     if (!selectedClip) {
@@ -405,6 +417,7 @@ export function PreviewPlayer() {
 
   return (
     <>
+      <audio ref={audioRef} className="hidden" preload="auto" />
       <div className="preview-tool-buttons">
         <button
           type="button"
@@ -440,7 +453,7 @@ export function PreviewPlayer() {
             <div
               ref={stageRef}
               className="preview-stage"
-              style={{ aspectRatio: aspect }}
+              style={stageStyle}
             >
               <video
                 ref={videoRef}

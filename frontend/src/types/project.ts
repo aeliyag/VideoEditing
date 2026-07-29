@@ -77,6 +77,7 @@ export interface EditorUiState {
 }
 
 export const MAIN_VIDEO_TRACK_ID = 'track-video-main'
+export const MAIN_AUDIO_TRACK_ID = 'track-audio-main'
 
 export function isCameraEffect(effect: Effect): effect is CameraEffect {
   return effect.type === 'camera'
