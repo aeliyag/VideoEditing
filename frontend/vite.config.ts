@@ -7,14 +7,28 @@ import { akoolProxyPlugin } from './vite-plugin-akool.js'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const akoolApiKey = env.AKOOL_API_KEY
 
   return {
-    plugins: [react(), tailwindcss(), akoolProxyPlugin(akoolApiKey)],
+    base: process.env.VITE_BASE_PATH || '/',
+    plugins: [
+      react(),
+      tailwindcss(),
+      akoolProxyPlugin({
+        apiKey: env.AKOOL_API_KEY,
+        supabaseUrl: env.SUPABASE_URL,
+        supabaseAnonKey: env.SUPABASE_ANON_KEY,
+      }),
+    ],
     server: {
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin',
         'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
+      // Explicit HMR endpoint — avoids reconnect failures after BFCache / tab restore.
+      hmr: {
+        host: 'localhost',
+        port: 5173,
+        clientPort: 5173,
       },
     },
     preview: {

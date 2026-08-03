@@ -1,10 +1,13 @@
 import { useEffect } from 'react'
 
+import { AuthLoadingSplash, AuthPage } from './components/AuthPage'
+import { MaterialsPanel } from './components/MaterialsPanel'
 import { PreviewPlayer } from './components/PreviewPlayer'
 import { Timeline } from './components/Timeline'
 import { Toolbar } from './components/Toolbar'
 import { clipAtTime } from './timeline/helpers'
 import { playbackController } from './playback/PlaybackController'
+import { AuthProvider, useAuth } from './state/AuthProvider'
 import { ProjectProvider, useProject } from './state/ProjectProvider'
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -46,6 +49,12 @@ function EditorLayout() {
         return
       }
 
+      if (key === 'delete' || key === 'backspace') {
+        event.preventDefault()
+        dispatch({ type: 'DELETE_SELECTED' })
+        return
+      }
+
       if (key === 'b') {
         event.preventDefault()
         const clip =
@@ -77,17 +86,40 @@ function EditorLayout() {
   return (
     <div className="editor-app">
       <h1 className="editor-title">Video Timeline Editor</h1>
-      <Toolbar />
-      <PreviewPlayer />
-      <Timeline />
+      <div className="editor-body">
+        <MaterialsPanel />
+        <div className="editor-main">
+          <Toolbar />
+          <PreviewPlayer />
+          <Timeline />
+        </div>
+      </div>
     </div>
+  )
+}
+
+function AuthenticatedApp() {
+  const { session, loading } = useAuth()
+
+  if (loading) {
+    return <AuthLoadingSplash />
+  }
+
+  if (!session) {
+    return <AuthPage />
+  }
+
+  return (
+    <ProjectProvider>
+      <EditorLayout />
+    </ProjectProvider>
   )
 }
 
 export default function App() {
   return (
-    <ProjectProvider>
-      <EditorLayout />
-    </ProjectProvider>
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
   )
 }

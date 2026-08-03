@@ -9,12 +9,15 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { flushSync } from 'react-dom'
 
 import { exportProjectToMp4 } from '../export/ExportEngine'
 import { generateAkoolTts } from '../akool/client'
+import { importDebug } from '../debug/importDebug'
 import { probeMediaFile, revokeMediaAsset } from '../media/probe'
+import { inferMaterialKind, probeFileAsMaterial } from '../media/materialHelpers'
 import { playbackController } from '../playback/PlaybackController'
-import type { MediaAsset, MediaStore } from '../types/project'
+import type { MaterialKind, MaterialOrigin, MediaAsset, MediaStore } from '../types/project'
 import { getVideoTrack, sortedClips, totalDuration } from '../timeline/helpers'
 import {
   deleteProjectVersion,
@@ -22,7 +25,8 @@ import {
   loadProjectVersion,
   saveProjectVersion,
   type SavedProjectMeta,
-} from '../storage/projectLibrary'
+} from '../storage/projectStorage'
+import { useAuth } from './AuthProvider'
 import {
   createInitialState,
   projectReducer,
@@ -36,7 +40,17 @@ interface ProjectContextValue {
   state: ProjectState
   dispatch: React.Dispatch<ProjectAction>
   mediaStore: MediaStore
-  importVideo: (file: File) => Promise<void>
+  importFiles: (files: FileList | File[]) => Promise<void>
+  addMaterialAsset: (params: {
+    file: File
+    name?: string
+    kind: MaterialKind
+    origin: MaterialOrigin
+    addFirstVideoToTimeline?: boolean
+  }) => Promise<MediaAsset>
+  addMaterialToTimeline: (materialId: string, track: 'video' | 'audio') => void
+  removeMaterial: (materialId: string) => void
+  detachAudioFromSelected: () => void
   addTtsAudio: (blob: Blob, fileName: string, timelineStart: number) => Promise<void>
   generateTtsAndAdd: (params: {
     inputText: string
@@ -74,6 +88,8 @@ function clearMediaStore(store: MediaStore): void {
 }
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
+  const userId = user?.id ?? null
   const [state, dispatch] = useReducer(projectReducer, undefined, createInitialState)
   const [mediaStore, setMediaStore] = useState<MediaStore>(() => new Map())
   const [exportProgress, setExportProgress] = useState(0)
@@ -86,6 +102,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [effectEditorMode, setEffectEditorMode] = useState<EffectEditorMode>(null)
   const mediaStoreRef = useRef(mediaStore)
   mediaStoreRef.current = mediaStore
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   const openEffectEditor = useCallback((mode: Exclude<EffectEditorMode, null>) => {
     playbackController.pause()
@@ -98,27 +116,55 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const primaryAsset = useMemo(() => {
     const track = getVideoTrack(state.document)
-    const first = track ? sortedClips(track)[0] : undefined
-    if (!first) {
+    if (!track) {
       return undefined
     }
-    return mediaStore.get(first.sourceId)
-  }, [state.document, mediaStore])
+    const atPlayhead = sortedClips(track).find(
+      (clip) =>
+        state.ui.playhead >= clip.timelineStart &&
+        state.ui.playhead < clip.timelineStart + (clip.sourceEnd - clip.sourceStart),
+    )
+    const candidates = atPlayhead ? [atPlayhead] : sortedClips(track)
+    for (const clip of candidates) {
+      const asset = mediaStore.get(clip.sourceId)
+      if (asset) {
+        return asset
+      }
+    }
+    return undefined
+  }, [state.document, state.ui.playhead, mediaStore])
 
   const primaryFps = primaryAsset?.fps ?? 30
+  const videoClipCount = getVideoTrack(state.document)?.clips.length ?? 0
 
   const refreshSavedProjects = useCallback(async () => {
-    const list = await listSavedProjects()
+    const list = await listSavedProjects(userId)
     setSavedProjects(list)
-  }, [])
+  }, [userId])
 
   useEffect(() => {
     void refreshSavedProjects()
   }, [refreshSavedProjects])
 
   useEffect(() => {
-    playbackController.setProject(state.document, mediaStore)
+    importDebug('ProjectProvider mounted — filter console with [import]')
+  }, [])
+
+  useEffect(() => {
+    playbackController.setProject(state.document, mediaStoreRef.current)
   }, [state.document, mediaStore])
+
+  useEffect(() => {
+    const materials = state.document.materials ?? []
+    const videoClips = getVideoTrack(state.document)?.clips.length ?? 0
+    importDebug('store snapshot', {
+      materialsCount: materials.length,
+      materialNames: materials.map((m) => m.name),
+      mediaStoreSize: mediaStore.size,
+      videoClips,
+      libraryMessage,
+    })
+  }, [state.document.materials, mediaStore.size, videoClipCount, libraryMessage])
 
   useEffect(() => {
     const unsub = playbackController.subscribe((time, playing) => {
@@ -135,13 +181,163 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const importVideo = useCallback(async (file: File) => {
-    clearMediaStore(mediaStoreRef.current)
-    const asset = await probeMediaFile(file)
-    setMediaStore(new Map([[asset.id, asset]]))
-    dispatch({ type: 'IMPORT_MEDIA', asset })
-    setLibraryMessage('')
+  const registerMaterialInStore = useCallback((asset: MediaAsset) => {
+    importDebug('registerMaterialInStore', {
+      assetId: asset.id,
+      fileName: asset.file.name,
+      duration: asset.duration,
+      storeSizeBefore: mediaStoreRef.current.size,
+    })
+    const next = new Map(mediaStoreRef.current)
+    next.set(asset.id, asset)
+    mediaStoreRef.current = next
+    flushSync(() => {
+      setMediaStore(next)
+    })
+    importDebug('registerMaterialInStore done', { storeSizeAfter: next.size })
   }, [])
+
+  const addMaterialAsset = useCallback(
+    async (params: {
+      file: File
+      name?: string
+      kind: MaterialKind
+      origin: MaterialOrigin
+      addFirstVideoToTimeline?: boolean
+    }) => {
+      const { asset, kind } = await probeFileAsMaterial(params.file)
+      const resolvedKind = params.kind ?? kind
+      registerMaterialInStore(asset)
+      dispatch({
+        type: 'ADD_MATERIAL',
+        asset,
+        name: params.name ?? params.file.name,
+        kind: resolvedKind,
+        origin: params.origin,
+        addFirstVideoToTimeline: params.addFirstVideoToTimeline,
+      })
+      return asset
+    },
+    [registerMaterialInStore],
+  )
+
+  const importFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files)
+      importDebug('importFiles called', {
+        count: list.length,
+        files: list.map((f) => ({ name: f.name, type: f.type, size: f.size })),
+      })
+      if (list.length === 0) {
+        importDebug('importFiles: empty list, aborting')
+        return
+      }
+      setLibraryMessage('Importing…')
+      try {
+        let addedClips = 0
+        for (const file of list) {
+          importDebug('probing file…', { name: file.name, type: file.type, size: file.size })
+          const { asset, kind } = await probeFileAsMaterial(file)
+          importDebug('probe done', {
+            assetId: asset.id,
+            kind,
+            duration: asset.duration,
+            width: asset.width,
+            height: asset.height,
+          })
+          registerMaterialInStore(asset)
+          const addToTimelineAtPlayhead =
+            kind === 'video' || kind === 'audio'
+              ? stateRef.current.ui.playhead
+              : undefined
+          importDebug('dispatch ADD_MATERIAL', {
+            assetId: asset.id,
+            kind,
+            addToTimelineAtPlayhead,
+            materialsBefore: stateRef.current.document.materials?.length ?? 0,
+          })
+          dispatch({
+            type: 'ADD_MATERIAL',
+            asset,
+            name: file.name,
+            kind,
+            origin: 'upload',
+            addToTimelineAtPlayhead,
+          })
+          if (addToTimelineAtPlayhead !== undefined) {
+            addedClips += 1
+          }
+        }
+        const msg =
+          addedClips > 0
+            ? `Added ${list.length} file(s) to materials and placed ${addedClips} on the timeline.`
+            : `Added ${list.length} file(s) to materials.`
+        importDebug('importFiles success', {
+          message: msg,
+          note: 'React state updates on next render — see "store snapshot" log',
+        })
+        setLibraryMessage(msg)
+      } catch (err) {
+        importDebug('importFiles FAILED', {
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        })
+        setLibraryMessage(
+          err instanceof Error ? `Import failed: ${err.message}` : 'Import failed.',
+        )
+      }
+    },
+    [registerMaterialInStore],
+  )
+
+  const addMaterialToTimeline = useCallback(
+    (materialId: string, track: 'video' | 'audio') => {
+      const asset = mediaStoreRef.current.get(materialId)
+      if (!asset) {
+        setLibraryMessage('Material not found.')
+        return
+      }
+      dispatch({
+        type: 'ADD_MATERIAL_TO_TIMELINE',
+        asset,
+        track,
+        timelineStart: state.ui.playhead,
+      })
+      setLibraryMessage('Added material to timeline at playhead.')
+    },
+    [state.ui.playhead],
+  )
+
+  const removeMaterial = useCallback((materialId: string) => {
+    const inUse = state.document.tracks.some((t) =>
+      t.clips.some((c) => c.sourceId === materialId),
+    )
+    if (inUse) {
+      setLibraryMessage('Cannot remove — material is used on the timeline.')
+      return
+    }
+    const asset = mediaStoreRef.current.get(materialId)
+    if (asset) {
+      revokeMediaAsset(asset)
+      setMediaStore((prev) => {
+        const next = new Map(prev)
+        next.delete(materialId)
+        return next
+      })
+    }
+    dispatch({ type: 'REMOVE_MATERIAL', materialId })
+    setLibraryMessage('Removed from materials.')
+  }, [state.document.tracks])
+
+  const detachAudioFromSelected = useCallback(() => {
+    const clipId = state.ui.selectedClipId
+    if (!clipId) {
+      setLibraryMessage('Select a video clip to detach audio.')
+      return
+    }
+    dispatch({ type: 'DETACH_AUDIO', clipId })
+    setLibraryMessage('Detached audio to the audio track.')
+  }, [state.ui.selectedClipId])
 
   const addTtsAudio = useCallback(
     async (blob: Blob, fileName: string, timelineStart: number) => {
@@ -199,7 +395,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const saveCurrentProject = useCallback(
     async (name?: string) => {
       const resolvedName = (name ?? projectName).trim() || 'Untitled timeline'
-      const meta = await saveProjectVersion({
+      const meta = await saveProjectVersion(userId, {
         id: activeSaveId ?? undefined,
         name: resolvedName,
         document: state.document,
@@ -213,6 +409,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       await refreshSavedProjects()
     },
     [
+      userId,
       activeSaveId,
       mediaStore,
       projectName,
@@ -225,7 +422,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const saveProjectAs = useCallback(
     async (name: string) => {
-      const meta = await saveProjectVersion({
+      const meta = await saveProjectVersion(userId, {
         name,
         document: state.document,
         mediaStore,
@@ -238,6 +435,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       await refreshSavedProjects()
     },
     [
+      userId,
       mediaStore,
       refreshSavedProjects,
       state.document,
@@ -248,7 +446,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const loadSavedProject = useCallback(
     async (id: string) => {
-      const loaded = await loadProjectVersion(id)
+      const loaded = await loadProjectVersion(userId, id)
       if (!loaded) {
         setLibraryMessage('Could not open that saved timeline.')
         return
@@ -256,9 +454,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       playbackController.pause()
       clearMediaStore(mediaStoreRef.current)
       setMediaStore(loaded.mediaStore)
+
+      let document = loaded.document
+      if (!document.materials?.length) {
+        const materials = Array.from(loaded.mediaStore.values()).map((asset) => ({
+          id: asset.id,
+          name: asset.file.name,
+          kind: inferMaterialKind(asset.file, asset),
+          origin: 'upload' as const,
+          addedAt: Date.now(),
+        }))
+        document = { ...document, materials }
+      }
+
       dispatch({
         type: 'LOAD_PROJECT',
-        document: loaded.document,
+        document,
         playhead: loaded.playhead,
         selectedClipId: loaded.selectedClipId,
       })
@@ -267,19 +478,19 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setLibraryMessage(`Opened “${loaded.name}”`)
       await refreshSavedProjects()
     },
-    [refreshSavedProjects],
+    [refreshSavedProjects, userId],
   )
 
   const deleteSavedProject = useCallback(
     async (id: string) => {
-      await deleteProjectVersion(id)
+      await deleteProjectVersion(userId, id)
       if (activeSaveId === id) {
         setActiveSaveId(null)
       }
       setLibraryMessage('Deleted saved timeline.')
       await refreshSavedProjects()
     },
-    [activeSaveId, refreshSavedProjects],
+    [activeSaveId, refreshSavedProjects, userId],
   )
 
   const newProject = useCallback(() => {
@@ -297,7 +508,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       state,
       dispatch,
       mediaStore,
-      importVideo,
+      importFiles,
+      addMaterialAsset,
+      addMaterialToTimeline,
+      removeMaterial,
+      detachAudioFromSelected,
       addTtsAudio,
       generateTtsAndAdd,
       exportVideo,
@@ -324,7 +539,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     [
       state,
       mediaStore,
-      importVideo,
+      importFiles,
+      addMaterialAsset,
+      addMaterialToTimeline,
+      removeMaterial,
+      detachAudioFromSelected,
       addTtsAudio,
       generateTtsAndAdd,
       exportVideo,

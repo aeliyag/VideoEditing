@@ -43,6 +43,7 @@ describe('camera frames', () => {
       id: '1',
       frameBank: [],
       tracks: [],
+      materials: [],
     }
     expect(resolveFrameRect(doc, null)).toEqual(FULL_FRAME_RECT)
   })

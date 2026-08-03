@@ -81,7 +81,9 @@ export function Timeline() {
   if (!track || clips.length === 0) {
     return (
       <section className="timeline-panel">
-        <p className="timeline-empty">Timeline appears after you import a video.</p>
+        <p className="timeline-empty">
+          Import a video via the Materials panel or toolbar — it will appear here automatically.
+        </p>
       </section>
     )
   }
@@ -114,6 +116,7 @@ export function Timeline() {
               mediaDuration={asset?.duration ?? primaryAsset?.duration ?? 0}
               fps={asset?.fps ?? primaryFps}
               onSelect={() => dispatch({ type: 'SELECT_CLIP', clipId: clip.id })}
+              onDelete={() => dispatch({ type: 'DELETE_CLIP', clipId: clip.id })}
               onTrim={(side, edgeTimelineTime) =>
                 dispatch({
                   type: 'TRIM_CLIP',
@@ -166,6 +169,7 @@ export function Timeline() {
               mediaDuration={asset?.duration ?? 0}
               fps={asset?.fps && asset.fps > 0 ? asset.fps : 30}
               onSelect={() => dispatch({ type: 'SELECT_CLIP', clipId: clip.id })}
+              onDelete={() => dispatch({ type: 'DELETE_CLIP', clipId: clip.id })}
               onTrim={(side, edgeTimelineTime) =>
                 dispatch({
                   type: 'TRIM_CLIP',
@@ -200,8 +204,8 @@ export function Timeline() {
         />
       </div>
       <p className="timeline-hint">
-        Click to seek · drag video clips to reorder · drag voice clips to reposition · trim
-        clip edges (video, voice, red-box)
+        Click to seek · select a clip · Delete/Backspace removes selected or playhead clip · drag
+        to reorder · trim edges
       </p>
     </section>
   )

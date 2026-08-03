@@ -28,19 +28,22 @@ export function createEmptyProject(): ProjectDocument {
       },
     ],
     frameBank: [],
+    materials: [],
   }
 }
 
-/** Adds the audio track when opening older saved projects. */
+/** Ensures audio track and materials array exist when opening older saved projects. */
 export function ensureProjectTracks(doc: ProjectDocument): ProjectDocument {
+  const materials = doc.materials ?? []
   const hasAudio = doc.tracks.some(
     (t) => t.id === MAIN_AUDIO_TRACK_ID && t.kind === 'audio',
   )
   if (hasAudio) {
-    return doc
+    return materials === doc.materials ? doc : { ...doc, materials }
   }
   return {
     ...doc,
+    materials,
     tracks: [
       ...doc.tracks,
       {
@@ -74,6 +77,28 @@ export function addClipFromSource(
   return updateVideoTrack(doc, [...track.clips, clip])
 }
 
+export function addVideoClipFromMaterial(
+  doc: ProjectDocument,
+  asset: MediaAsset,
+  timelineStart: number,
+): ProjectDocument {
+  const track = getVideoTrack(doc)
+  if (!track) {
+    return doc
+  }
+
+  const clip: TimelineClip = {
+    id: uuidv4(),
+    sourceId: asset.id,
+    sourceStart: 0,
+    sourceEnd: asset.duration,
+    timelineStart: Math.max(0, timelineStart),
+    effects: [],
+  }
+
+  return updateVideoTrack(doc, [...track.clips, clip])
+}
+
 export function addAudioClipFromSource(
   doc: ProjectDocument,
   asset: MediaAsset,
@@ -94,6 +119,37 @@ export function addAudioClipFromSource(
   }
 
   return updateAudioTrack(doc, [...track.clips, clip])
+}
+
+export function detachAudioFromClip(
+  doc: ProjectDocument,
+  clipId: string,
+): ProjectDocument {
+  const track = getVideoTrack(doc)
+  if (!track) {
+    return doc
+  }
+  const clip = track.clips.find((c) => c.id === clipId)
+  if (!clip || clip.muteVideoAudio) {
+    return doc
+  }
+
+  const audioClip: TimelineClip = {
+    id: uuidv4(),
+    sourceId: clip.sourceId,
+    sourceStart: clip.sourceStart,
+    sourceEnd: clip.sourceEnd,
+    timelineStart: clip.timelineStart,
+    effects: [],
+  }
+
+  const audioTrack = getAudioTrack(doc)
+  const nextAudioClips = audioTrack ? [...audioTrack.clips, audioClip] : [audioClip]
+  const withAudio = updateAudioTrack(doc, nextAudioClips)
+  return updateVideoTrack(
+    withAudio,
+    track.clips.map((c) => (c.id === clipId ? { ...c, muteVideoAudio: true } : c)),
+  )
 }
 
 function updateAudioTrack(doc: ProjectDocument, clips: TimelineClip[]): ProjectDocument {

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createClient } from '@supabase/supabase-js'
 import type { Plugin } from 'vite'
 
 const AKOOL_ORIGIN = 'https://openapi.akool.com'
@@ -28,6 +29,38 @@ interface AudioInfoData {
   url?: string
 }
 
+interface ImageCreateData {
+  _id: string
+  image_status: number
+}
+
+interface ImageResultData {
+  _id: string
+  image_status: number
+  image?: string
+}
+
+interface Image2VideoCreateData {
+  _id: string
+  status: number
+}
+
+interface Image2VideoResultItem {
+  _id: string
+  status: number
+  video_url?: string
+}
+
+interface Image2VideoResultsData {
+  result: Image2VideoResultItem[]
+}
+
+interface AkoolProxyOptions {
+  apiKey: string | undefined
+  supabaseUrl: string | undefined
+  supabaseAnonKey: string | undefined
+}
+
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -46,6 +79,25 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
     })
     req.on('error', reject)
   })
+}
+
+async function verifyAuthToken(
+  supabaseUrl: string,
+  supabaseAnonKey: string,
+  authHeader: string | undefined,
+): Promise<boolean> {
+  if (!authHeader?.startsWith('Bearer ')) {
+    return false
+  }
+  const token = authHeader.slice('Bearer '.length).trim()
+  if (!token) {
+    return false
+  }
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  const { data, error } = await supabase.auth.getUser(token)
+  return !error && Boolean(data.user)
 }
 
 async function akoolFetch<T>(
@@ -94,7 +146,9 @@ async function pollTtsUrl(apiKey: string, audioModelId: string): Promise<string>
   throw new Error('Akool TTS timed out')
 }
 
-export function akoolProxyPlugin(apiKey: string | undefined): Plugin {
+export function akoolProxyPlugin(options: AkoolProxyOptions): Plugin {
+  const { apiKey, supabaseUrl, supabaseAnonKey } = options
+
   return {
     name: 'akool-proxy',
     configureServer(server) {
@@ -102,6 +156,24 @@ export function akoolProxyPlugin(apiKey: string | undefined): Plugin {
         const url = req.url ?? ''
         if (!url.startsWith('/api/akool/')) {
           next()
+          return
+        }
+
+        if (!supabaseUrl?.trim() || !supabaseAnonKey?.trim()) {
+          sendJson(res, 503, {
+            error:
+              'SUPABASE_URL and SUPABASE_ANON_KEY are required for API auth. Add them to frontend/.env.',
+          })
+          return
+        }
+
+        const authorized = await verifyAuthToken(
+          supabaseUrl,
+          supabaseAnonKey,
+          req.headers.authorization,
+        )
+        if (!authorized) {
+          sendJson(res, 401, { error: 'Unauthorized. Sign in required.' })
           return
         }
 
@@ -113,7 +185,10 @@ export function akoolProxyPlugin(apiKey: string | undefined): Plugin {
         }
 
         try {
-          if (url === '/api/akool/voices' && req.method === 'GET') {
+          const parsedUrl = new URL(url, 'http://localhost')
+          const pathname = parsedUrl.pathname
+
+          if (pathname === '/api/akool/voices' && req.method === 'GET') {
             const result = await akoolFetch<VoiceListItem[]>(
               apiKey,
               '/api/open/v3/voice/list?from=3',
@@ -133,7 +208,7 @@ export function akoolProxyPlugin(apiKey: string | undefined): Plugin {
             return
           }
 
-          if (url === '/api/akool/tts' && req.method === 'POST') {
+          if (pathname === '/api/akool/tts' && req.method === 'POST') {
             const body = (await readJsonBody(req)) as {
               input_text?: string
               voice_id?: string
@@ -177,6 +252,142 @@ export function akoolProxyPlugin(apiKey: string | undefined): Plugin {
             res.setHeader('Content-Type', 'audio/mpeg')
             res.setHeader('Content-Length', buffer.length)
             res.end(buffer)
+            return
+          }
+
+          if (pathname === '/api/akool/image/generate' && req.method === 'POST') {
+            const body = (await readJsonBody(req)) as {
+              prompt?: string
+              scale?: string
+              resolution?: string
+              batch_quantity?: number
+              negative_prompt?: string
+              source_images?: string[]
+            }
+            const prompt = body.prompt?.trim()
+            if (!prompt) {
+              sendJson(res, 400, { error: 'prompt is required' })
+              return
+            }
+            const result = await akoolFetch<ImageCreateData | ImageCreateData[]>(
+              apiKey,
+              '/api/open/v4/content/image/createBySourcePrompt',
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  prompt,
+                  scale: body.scale ?? '16:9',
+                  resolution: body.resolution ?? '1080p',
+                  batch_quantity: body.batch_quantity ?? 1,
+                  negative_prompt: body.negative_prompt,
+                  source_images: body.source_images,
+                }),
+              },
+            )
+            if (result.code !== 1000 || !result.data) {
+              sendJson(res, 502, { error: result.msg ?? 'Image create failed' })
+              return
+            }
+            const item = Array.isArray(result.data) ? result.data[0] : result.data
+            if (!item?._id) {
+              sendJson(res, 502, { error: 'Image create returned no task id' })
+              return
+            }
+            sendJson(res, 200, { modelId: item._id })
+            return
+          }
+
+          if (pathname === '/api/akool/image/result' && req.method === 'GET') {
+            const modelId = parsedUrl.searchParams.get('model_id')?.trim()
+            if (!modelId) {
+              sendJson(res, 400, { error: 'model_id is required' })
+              return
+            }
+            const result = await akoolFetch<ImageResultData>(
+              apiKey,
+              `/api/open/v3/content/image/infobymodelid?image_model_id=${encodeURIComponent(modelId)}`,
+              { method: 'GET' },
+            )
+            if (result.code !== 1000 || !result.data) {
+              sendJson(res, 502, { error: result.msg ?? 'Image result failed' })
+              return
+            }
+            sendJson(res, 200, {
+              status: result.data.image_status,
+              imageUrl: result.data.image,
+            })
+            return
+          }
+
+          if (pathname === '/api/akool/image2video/create' && req.method === 'POST') {
+            const body = (await readJsonBody(req)) as {
+              image_url?: string
+              prompt?: string
+              negative_prompt?: string
+              resolution?: string
+              audio_type?: number
+              video_length?: number
+            }
+            const imageUrl = body.image_url?.trim()
+            const prompt = body.prompt?.trim()
+            if (!imageUrl || !prompt) {
+              sendJson(res, 400, { error: 'image_url and prompt are required' })
+              return
+            }
+            const result = await akoolFetch<Image2VideoCreateData>(
+              apiKey,
+              '/api/open/v4/image2Video/createBySourcePrompt',
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  image_url: imageUrl,
+                  prompt,
+                  negative_prompt:
+                    body.negative_prompt ??
+                    'blurry, low quality, distorted, watermark, text, logo',
+                  resolution: body.resolution ?? '1080p',
+                  audio_type: body.audio_type ?? 3,
+                  video_length: body.video_length ?? 5,
+                  extend_prompt: true,
+                  webhookurl: '',
+                }),
+              },
+            )
+            if (result.code !== 1000 || !result.data?._id) {
+              sendJson(res, 502, { error: result.msg ?? 'Image-to-video create failed' })
+              return
+            }
+            sendJson(res, 200, { taskId: result.data._id })
+            return
+          }
+
+          if (pathname === '/api/akool/image2video/result' && req.method === 'POST') {
+            const body = (await readJsonBody(req)) as { task_id?: string }
+            const taskId = body.task_id?.trim()
+            if (!taskId) {
+              sendJson(res, 400, { error: 'task_id is required' })
+              return
+            }
+            const result = await akoolFetch<Image2VideoResultsData>(
+              apiKey,
+              '/api/open/v4/image2Video/resultsByIds',
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ _ids: taskId }),
+              },
+            )
+            if (result.code !== 1000 || !result.data?.result?.[0]) {
+              sendJson(res, 502, { error: result.msg ?? 'Image-to-video result failed' })
+              return
+            }
+            const item = result.data.result[0]
+            sendJson(res, 200, {
+              status: item.status,
+              videoUrl: item.video_url,
+            })
             return
           }
 

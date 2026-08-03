@@ -115,6 +115,23 @@ export function audioClipAtTime(
   return undefined
 }
 
+/** Clip to delete: explicit selection, else video/audio at playhead. */
+export function resolveDeleteClipId(
+  doc: ProjectDocument,
+  playhead: number,
+  selectedClipId: string | null,
+): string | null {
+  if (selectedClipId && findClipById(doc, selectedClipId)) {
+    return selectedClipId
+  }
+  const video = clipAtTime(doc, playhead)
+  if (video) {
+    return video.id
+  }
+  const audio = audioClipAtTime(doc, playhead)
+  return audio?.id ?? null
+}
+
 export function timelineToSourceTime(clip: TimelineClip, timelineTime: number): number {
   const offset = timelineTime - clip.timelineStart
   return clip.sourceStart + offset

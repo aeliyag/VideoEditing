@@ -1,9 +1,11 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 
+import { importDebug } from '../debug/importDebug'
 import { playbackController } from '../playback/PlaybackController'
-import { TtsPanel } from './TtsPanel'
+import { AkoolToolsPanel } from './AkoolToolsPanel'
+import { useAuth } from '../state/AuthProvider'
 import { useProject } from '../state/ProjectProvider'
-import { getVideoTrack, sortedClips } from '../timeline/helpers'
+import { getVideoTrack, isAudioClipId, resolveDeleteClipId, sortedClips } from '../timeline/helpers'
 
 function formatSavedDate(timestamp: number): string {
   return new Date(timestamp).toLocaleString(undefined, {
@@ -15,11 +17,10 @@ function formatSavedDate(timestamp: number): string {
 }
 
 export function Toolbar() {
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { user, signOut } = useAuth()
   const {
     state,
     dispatch,
-    importVideo,
     exportVideo,
     isExporting,
     exportProgress,
@@ -35,6 +36,9 @@ export function Toolbar() {
     deleteSavedProject,
     newProject,
     libraryMessage,
+    detachAudioFromSelected,
+    mediaStore,
+    importFiles,
   } = useProject()
 
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -42,14 +46,33 @@ export function Toolbar() {
 
   const track = getVideoTrack(state.document)
   const hasClips = (track?.clips.length ?? 0) > 0
-
-  const onImportClick = () => fileInputRef.current?.click()
+  const selectedClip = state.ui.selectedClipId
+    ? state.document.tracks.flatMap((t) => t.clips).find((c) => c.id === state.ui.selectedClipId)
+    : undefined
+  const selectedAsset = selectedClip ? mediaStore.get(selectedClip.sourceId) : undefined
+  const canDetachAudio =
+    selectedClip &&
+    !isAudioClipId(state.document, selectedClip.id) &&
+    selectedAsset?.hasAudio &&
+    !selectedClip.muteVideoAudio
+  const canDeleteClip = Boolean(
+    resolveDeleteClipId(state.document, state.ui.playhead, state.ui.selectedClipId),
+  )
 
   const onFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
+    importDebug('Toolbar onChange fired', {
+      rawFileCount: event.target.files?.length ?? 0,
+    })
+    const list = Array.from(event.target.files ?? [])
     event.target.value = ''
-    if (file) {
-      await importVideo(file)
+    importDebug('Toolbar files captured', {
+      count: list.length,
+      files: list.map((f) => ({ name: f.name, type: f.type, size: f.size })),
+    })
+    if (list.length > 0) {
+      await importFiles(list)
+    } else {
+      importDebug('Toolbar: no files in list after capture')
     }
   }
 
@@ -88,13 +111,6 @@ export function Toolbar() {
 
   return (
     <header className="toolbar">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*"
-        className="hidden"
-        onChange={onFileChange}
-      />
       <div className="project-name-row">
         <label className="project-name-label">
           Timeline
@@ -106,6 +122,12 @@ export function Toolbar() {
           />
         </label>
         {activeSaveId && <span className="project-save-badge">Saved version</span>}
+        <div className="toolbar-user">
+          <span className="toolbar-user-email">{user?.email}</span>
+          <button type="button" className="btn btn-small" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </div>
       </div>
       <div className="toolbar-actions">
         <button type="button" className="btn" onClick={onNew}>
@@ -130,8 +152,24 @@ export function Toolbar() {
         >
           Save as…
         </button>
-        <button type="button" className="btn" onClick={onImportClick}>
-          Import
+        <label className="btn" htmlFor="toolbar-file-input">
+          Import files
+        </label>
+        <input
+          id="toolbar-file-input"
+          type="file"
+          accept="video/*,audio/*,image/*"
+          multiple
+          className="sr-only-file"
+          onChange={(e) => void onFileChange(e)}
+        />
+        <button
+          type="button"
+          className="btn"
+          disabled={!canDetachAudio}
+          onClick={() => detachAudioFromSelected()}
+        >
+          Detach audio
         </button>
         <button
           type="button"
@@ -144,7 +182,7 @@ export function Toolbar() {
         <button
           type="button"
           className="btn"
-          disabled={!state.ui.selectedClipId}
+          disabled={!canDeleteClip}
           onClick={() => dispatch({ type: 'DELETE_SELECTED' })}
         >
           Delete
@@ -166,7 +204,7 @@ export function Toolbar() {
           {state.ui.isPlaying ? 'Pause' : 'Play'}
         </button>
       </div>
-      <TtsPanel />
+      <AkoolToolsPanel />
       {(isExporting || exportMessage.startsWith('Export failed')) && (
         <div className="export-status">
           {isExporting && (

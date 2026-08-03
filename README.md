@@ -1,151 +1,98 @@
 # Video Editing Toolkit
 
-A Python project for editing software tutorial videos. It includes:
+Browser-based video timeline editor with Supabase auth, cloud project storage, and Akool AI tools (TTS, image generation, image-to-video). Also includes Python CLI tools for tutorial video segmentation and highlight editing.
 
-1. **Video Highlight Editor** — draw timed red-box outlines in a Streamlit UI and export them baked into the video
-2. **Video Segmentation Engine** — CLI pipeline for scene detection, transcription, OCR, and semantic timeline export
+**Live demo:** [https://aeliyag.github.io/VideoEditing/](https://aeliyag.github.io/VideoEditing/)
 
-## Requirements
+## Video Timeline Editor (React)
 
-- Python 3.11+
-- FFmpeg (required by Whisper and PySceneDetect)
+Import media, arrange clips on a multi-track timeline, add red-box highlight effects, preview in the browser, and export with FFmpeg.wasm. Sign in with Supabase to save projects to the cloud and use Akool features.
 
-## Installation
+Chromium is recommended for export — FFmpeg runs in the browser via WebAssembly.
+
+### Local development
+
+```bash
+cd frontend
+npm ci
+cp .env.example .env   # fill in Supabase + Akool keys
+npm run dev
+```
+
+Open **http://localhost:5173**.
+
+### Environment variables
+
+| Variable | Scope | Purpose |
+|---|---|---|
+| `VITE_SUPABASE_URL` | Client (build) | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | Client (build) | Supabase anon key |
+| `VITE_AKOOL_API_BASE` | Client (build) | Akool proxy URL (production); defaults to `/api/akool` in dev |
+| `AKOOL_API_KEY` | Server (dev only) | Akool OpenAPI key — proxied by Vite dev server, never shipped to browser |
+| `SUPABASE_URL` | Server (dev only) | Used by Vite dev proxy for JWT verification |
+| `SUPABASE_ANON_KEY` | Server (dev only) | Used by Vite dev proxy for JWT verification |
+
+See [`frontend/.env.example`](frontend/.env.example) for a template.
+
+### Deploy to GitHub Pages
+
+The frontend deploys automatically on push to `main` via [`.github/workflows/deploy-frontend.yml`](.github/workflows/deploy-frontend.yml).
+
+**One-time setup:**
+
+1. **Enable Pages** — Repo → Settings → Pages → Source: **GitHub Actions**
+2. **Add repository variables** (Settings → Secrets and variables → Actions → Variables):
+   - `VITE_SUPABASE_URL` — your Supabase project URL
+   - `VITE_SUPABASE_ANON_KEY` — your Supabase anon key
+   - `VITE_AKOOL_API_BASE` — e.g. `https://<project-ref>.supabase.co/functions/v1/akool-proxy`
+3. **Configure Supabase Auth** — add `https://aeliyag.github.io/VideoEditing` to Site URL and Redirect URLs
+4. **Deploy the Akool proxy** — ensure `supabase/functions/akool-proxy` is deployed with `AKOOL_API_KEY` set as a Supabase secret
+5. Push to `main` (or trigger the workflow manually from the Actions tab)
+
+The build sets `VITE_BASE_PATH=/VideoEditing/` so assets resolve correctly on the project Pages URL.
+
+---
+
+## Python Tools
+
+### Video Highlight Editor
+
+Draw red rectangle outlines on a video, edit them on a timeline, and export a new video with the boxes burned in.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
-```
-
-## Video Highlight Editor
-
-Draw red rectangle outlines on a video, edit them on a timeline, and export a new video with the boxes burned in.
-
-```bash
 streamlit run app.py
 ```
 
-### Workflow
+### Video Segmentation Engine
 
-1. Upload a video (`.mp4`, `.mov`, or `.avi`)
-2. Add highlights by setting a start time, optional end time, and drawing a rectangle on a frame
-3. Edit highlights in the table (add, remove, or adjust timing and coordinates)
-4. Preview at any timestamp to see which boxes are active
-5. Click **Generate highlighted video** to export `highlighted_output.mp4`
-
-### Timing rules
-
-- Every highlight requires a **start time**
-- **End time is optional** — leave it blank to keep the highlight visible from its start time through the end of the video
-- If an end time is set, the highlight is visible only while `start_time <= t <= end_time`
-
-See [`examples/highlight_timeline.example.json`](examples/highlight_timeline.example.json) for the JSON timeline format.
-
-## Video Segmentation Engine
-
-### Configuration
-
-Edit [`config.yaml`](config.yaml) to customize pipeline behavior:
-
-```yaml
-segmentation:
-  threshold: 27.0
-  min_scene_len: 15
-  fade_threshold: 12.0
-transcription:
-  model: base
-  language: en
-frame_sampling:
-  fps: 1
-  output_dir: frames/
-ocr:
-  languages:
-    - en
-  min_confidence: 0.5
-output:
-  output_file: timeline.json
-```
-
-### Full pipeline
+CLI pipeline for scene detection, transcription, OCR, and semantic timeline export.
 
 ```bash
 video-segment process tutorial.mp4
 ```
 
-Options:
+See [`config.yaml`](config.yaml) for pipeline options. Output is a semantic timeline JSON — see [`examples/timeline.example.json`](examples/timeline.example.json).
 
-- `--config config.yaml` — path to config file
-- `--output timeline.json` — output path for the timeline
-- `--keep-frames` — retain sampled frames after processing
-- `--verbose` — enable debug logging
+### Requirements
 
-### Phase 1 only (scene segmentation)
-
-```bash
-video-segment segment-only tutorial.mp4 --output segments.json
-```
-
-### Phase 2 only (transcription)
-
-```bash
-video-segment transcribe-only tutorial.mp4 --output transcript.json
-```
-
-## Output
-
-The segmentation pipeline produces a semantic timeline JSON. Segment titles and descriptions are inferred from OCR text and transcript content:
-
-```json
-{
-  "segments": [
-    {
-      "id": 1,
-      "title": "Create Avatar",
-      "description": "Click Create Avatar Upload an image Click Generate to create your avatar",
-      "start_time": 25.3,
-      "end_time": 58.1,
-      "transcript": [
-        "Click Create Avatar",
-        "Upload an image"
-      ],
-      "ui_elements": [
-        "Create Avatar",
-        "Upload Image",
-        "Generate"
-      ]
-    }
-  ]
-}
-```
-
-See [`examples/timeline.example.json`](examples/timeline.example.json) for a complete example.
+- Python 3.11+
+- FFmpeg (required by Whisper and PySceneDetect)
 
 ## Project Structure
 
 ```
-effects/
-├── clip.py                 # Video clip abstraction
-├── highlight.py            # Red-box overlay effect
-├── highlight_timeline.py   # Highlight event models
-└── zoom.py                 # Legacy zoom effect (standalone demo)
-
-video_segmentation/
-├── cli.py                  # CLI entrypoint
-├── config.py               # YAML configuration loading
-├── models.py               # Shared Pydantic data models
-├── segmentation.py         # Phase 1: PySceneDetect
-├── transcription.py        # Phase 2: Whisper
-├── frame_sampling.py       # Phase 3: OpenCV frame extraction
-├── ocr.py                  # Phase 4: EasyOCR
-└── timeline.py             # Timeline assembly and export
-
+frontend/                   # React video timeline editor (GitHub Pages)
+├── src/
+│   ├── components/         # UI: Timeline, Preview, Toolbar, Materials
+│   ├── export/             # FFmpeg.wasm export engine
+│   ├── state/              # Project + auth providers
+│   └── storage/            # Cloud project library (Supabase)
+supabase/functions/         # Edge functions (Akool proxy)
+effects/                    # Python video effects
+video_segmentation/         # Python CLI segmentation pipeline
 app.py                      # Streamlit highlight editor
-render.py                   # Video render utilities
 ```
-
-## Notes
-
-- The first run of the segmentation pipeline downloads Whisper and EasyOCR model weights, which can take several minutes.
-- Sampled frames are stored under `frames/` by default and removed after processing unless `--keep-frames` is passed.

@@ -11,6 +11,7 @@ interface AudioTimelineClipProps {
   mediaDuration: number
   fps: number
   onSelect: () => void
+  onDelete: () => void
   onTrim: (side: 'start' | 'end', edgeTimelineTime: number) => void
   onMove: (timelineStart: number) => void
 }
@@ -20,6 +21,7 @@ export function AudioTimelineClip({
   pxPerSecond,
   selected,
   onSelect,
+  onDelete,
   onTrim,
   onMove,
 }: AudioTimelineClipProps) {
@@ -59,6 +61,9 @@ export function AudioTimelineClip({
   }
 
   const onBodyPointerDown = (event: React.PointerEvent) => {
+    if ((event.target as HTMLElement).closest('.clip-delete-btn')) {
+      return
+    }
     if ((event.target as HTMLElement).classList.contains('trim-handle')) {
       return
     }
@@ -98,6 +103,21 @@ export function AudioTimelineClip({
       onPointerUp={onBodyPointerUp}
     >
       <span className="timeline-clip-label">Voice</span>
+      {selected && (
+        <button
+          type="button"
+          className="clip-delete-btn"
+          title="Delete clip"
+          aria-label="Delete clip"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            onDelete()
+          }}
+        >
+          ×
+        </button>
+      )}
       <div
         className="trim-handle trim-handle-start"
         onPointerDown={onTrimPointerDown('start')}

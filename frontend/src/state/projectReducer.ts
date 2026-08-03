@@ -1,9 +1,19 @@
-import type { ProjectDocument, EditorUiState, MediaAsset, FrameRect } from '../types/project'
+import type {
+  ProjectDocument,
+  EditorUiState,
+  MediaAsset,
+  FrameRect,
+  MaterialEntry,
+  MaterialKind,
+  MaterialOrigin,
+} from '../types/project'
 import {
   addClipFromSource,
   addAudioClipFromSource,
+  addVideoClipFromMaterial,
   createEmptyProject,
   deleteClip,
+  detachAudioFromClip,
   ensureProjectTracks,
   moveAudioClip,
   reorderClipByDrag,
@@ -17,7 +27,7 @@ import {
   renameFramePreset,
   saveClipCamera,
 } from '../camera/frameBankOps'
-import { clampPlayhead, totalDuration } from '../timeline/helpers'
+import { clampPlayhead, findClipById, resolveDeleteClipId, totalDuration } from '../timeline/helpers'
 import {
   removeClipRedBox,
   setClipRedBox,
@@ -26,12 +36,27 @@ import {
 
 export type ProjectAction =
   | { type: 'IMPORT_MEDIA'; asset: MediaAsset }
+  | {
+      type: 'ADD_MATERIAL'
+      asset: MediaAsset
+      name: string
+      kind: MaterialKind
+      origin: MaterialOrigin
+      /** @deprecated use addToTimelineAtPlayhead */
+      addFirstVideoToTimeline?: boolean
+      /** When set, video/audio materials are placed on the timeline at this time. */
+      addToTimelineAtPlayhead?: number
+    }
+  | { type: 'ADD_MATERIAL_TO_TIMELINE'; asset: MediaAsset; track: 'video' | 'audio'; timelineStart: number }
+  | { type: 'REMOVE_MATERIAL'; materialId: string }
+  | { type: 'DETACH_AUDIO'; clipId: string }
   | { type: 'ADD_TTS_CLIP'; asset: MediaAsset; timelineStart: number }
   | { type: 'SET_PLAYHEAD'; time: number }
   | { type: 'SELECT_CLIP'; clipId: string | null }
   | { type: 'SET_PLAYING'; isPlaying: boolean }
   | { type: 'SPLIT_AT_PLAYHEAD'; fps: number }
   | { type: 'DELETE_SELECTED' }
+  | { type: 'DELETE_CLIP'; clipId: string }
   | { type: 'TRIM_CLIP'; clipId: string; side: 'start' | 'end'; edgeTimelineTime: number; mediaDuration: number; fps: number }
   | { type: 'REORDER_CLIP'; clipId: string; provisionalTimelineStart: number }
   | { type: 'MOVE_AUDIO_CLIP'; clipId: string; timelineStart: number }
@@ -91,13 +116,127 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'IMPORT_MEDIA': {
       const document = addClipFromSource(createEmptyProject(), action.asset, 0)
+      const entry: MaterialEntry = {
+        id: action.asset.id,
+        name: action.asset.file.name,
+        kind: 'video',
+        origin: 'upload',
+        addedAt: Date.now(),
+      }
       return {
-        document,
+        document: { ...document, materials: [entry] },
         ui: {
           playhead: 0,
           selectedClipId: document.tracks[0]?.clips[0]?.id ?? null,
           isPlaying: false,
         },
+      }
+    }
+
+    case 'ADD_MATERIAL': {
+      const entry: MaterialEntry = {
+        id: action.asset.id,
+        name: action.name,
+        kind: action.kind,
+        origin: action.origin,
+        addedAt: Date.now(),
+      }
+      let document = ensureProjectTracks(state.document)
+      const materials = document.materials ?? []
+      const existing = materials.some((m) => m.id === entry.id)
+      if (!existing) {
+        document = {
+          ...document,
+          materials: [entry, ...materials],
+        }
+      }
+      const videoTrack = document.tracks.find((t) => t.kind === 'video')
+      const timelineEmpty = (videoTrack?.clips.length ?? 0) === 0
+      const shouldAddFirstVideo =
+        action.addFirstVideoToTimeline &&
+        action.kind === 'video' &&
+        timelineEmpty
+      if (shouldAddFirstVideo) {
+        document = addClipFromSource(document, action.asset, 0)
+      }
+
+      const playhead =
+        action.addToTimelineAtPlayhead ?? state.ui.playhead
+      const shouldAddAtPlayhead =
+        action.addToTimelineAtPlayhead !== undefined &&
+        (action.kind === 'video' || action.kind === 'audio')
+      if (shouldAddAtPlayhead && action.kind === 'video') {
+        document = addVideoClipFromMaterial(document, action.asset, playhead)
+      } else if (shouldAddAtPlayhead && action.kind === 'audio') {
+        document = addAudioClipFromSource(document, action.asset, playhead)
+      }
+
+      const addedClip =
+        shouldAddAtPlayhead || shouldAddFirstVideo
+          ? document.tracks
+              .flatMap((t) => t.clips)
+              .find((c) => c.sourceId === action.asset.id)
+          : undefined
+
+      return {
+        document,
+        ui: {
+          ...state.ui,
+          selectedClipId: addedClip?.id ?? state.ui.selectedClipId,
+        },
+      }
+    }
+
+    case 'ADD_MATERIAL_TO_TIMELINE': {
+      const materials = state.document.materials ?? []
+      const material = materials.find((m) => m.id === action.asset.id)
+      if (!material) {
+        return state
+      }
+      let document = ensureProjectTracks(state.document)
+      if (action.track === 'video' && material.kind !== 'audio') {
+        document = addVideoClipFromMaterial(document, action.asset, action.timelineStart)
+        const videoTrack = document.tracks.find((t) => t.kind === 'video')
+        const newClip = videoTrack?.clips.at(-1)
+        return {
+          document,
+          ui: { ...state.ui, selectedClipId: newClip?.id ?? state.ui.selectedClipId },
+        }
+      }
+      if (action.track === 'audio' && (material.kind === 'audio' || material.kind === 'video')) {
+        document = addAudioClipFromSource(document, action.asset, action.timelineStart)
+        const audioTrack = document.tracks.find((t) => t.kind === 'audio')
+        const newClip = audioTrack?.clips.at(-1)
+        return {
+          document,
+          ui: { ...state.ui, selectedClipId: newClip?.id ?? state.ui.selectedClipId },
+        }
+      }
+      return state
+    }
+
+    case 'REMOVE_MATERIAL': {
+      const inUse = state.document.tracks.some((t) =>
+        t.clips.some((c) => c.sourceId === action.materialId),
+      )
+      if (inUse) {
+        return state
+      }
+      return {
+        ...state,
+        document: {
+          ...state.document,
+          materials: (state.document.materials ?? []).filter(
+            (m) => m.id !== action.materialId,
+          ),
+        },
+      }
+    }
+
+    case 'DETACH_AUDIO': {
+      return {
+        ...state,
+        document: detachAudioFromClip(state.document, action.clipId),
       }
     }
 
@@ -108,10 +247,20 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         action.asset,
         action.timelineStart,
       )
+      const entry: MaterialEntry = {
+        id: action.asset.id,
+        name: action.asset.file.name,
+        kind: 'audio',
+        origin: 'tts',
+        addedAt: Date.now(),
+      }
+      const materials = document.materials.some((m) => m.id === entry.id)
+        ? document.materials
+        : [entry, ...document.materials]
       const audioTrack = document.tracks.find((t) => t.kind === 'audio')
       const newClip = audioTrack?.clips[audioTrack.clips.length - 1]
       return {
-        document,
+        document: { ...document, materials },
         ui: {
           ...state.ui,
           selectedClipId: newClip?.id ?? state.ui.selectedClipId,
@@ -156,11 +305,20 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       }
     }
 
-    case 'DELETE_SELECTED': {
-      if (!state.ui.selectedClipId) {
+    case 'DELETE_SELECTED':
+    case 'DELETE_CLIP': {
+      const clipId =
+        action.type === 'DELETE_CLIP'
+          ? action.clipId
+          : resolveDeleteClipId(
+              state.document,
+              state.ui.playhead,
+              state.ui.selectedClipId,
+            )
+      if (!clipId || !findClipById(state.document, clipId)) {
         return state
       }
-      const document = deleteClip(state.document, state.ui.selectedClipId)
+      const document = deleteClip(state.document, clipId)
       const max = totalDuration(document)
       return {
         document,

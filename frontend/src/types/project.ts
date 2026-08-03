@@ -1,3 +1,14 @@
+export type MaterialKind = 'video' | 'audio' | 'image'
+export type MaterialOrigin = 'upload' | 'tts' | 'image-generate' | 'image-to-video'
+
+export interface MaterialEntry {
+  id: string
+  name: string
+  kind: MaterialKind
+  origin: MaterialOrigin
+  addedAt: number
+}
+
 export type TrackKind = 'video' | 'overlay' | 'audio' | 'camera'
 
 /** Normalized crop rect in source space (0–1). */
@@ -43,6 +54,8 @@ export interface TimelineClip {
   sourceEnd: number
   timelineStart: number
   effects: Effect[]
+  /** When true, preview/export mutes embedded video audio (e.g. after detach). */
+  muteVideoAudio?: boolean
 }
 
 export interface Track {
@@ -55,6 +68,7 @@ export interface ProjectDocument {
   id: string
   tracks: Track[]
   frameBank: FramePreset[]
+  materials: MaterialEntry[]
 }
 
 export interface MediaAsset {

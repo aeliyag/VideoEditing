@@ -332,6 +332,8 @@ export function PreviewPlayer() {
   const activeClip =
     clipAtTime(state.document, state.ui.playhead) ?? selectedClip ?? undefined
 
+  const videoMuted = Boolean(activeClip?.muteVideoAudio)
+
   const activeDraftRect =
     cameraSlot === 'end' && endDraft ? endDraft.rect : startDraft.rect
 
@@ -463,7 +465,7 @@ export function PreviewPlayer() {
                   transformOrigin: '0 0',
                 }}
                 playsInline
-                muted={false}
+                muted={videoMuted}
                 controls={false}
               />
               {selectedClip &&
