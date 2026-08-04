@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { importDebug } from '../debug/importDebug'
 import { playbackController } from '../playback/PlaybackController'
 import { AkoolToolsPanel } from './AkoolToolsPanel'
+import { AkoolRecordingPanel } from './AkoolRecordingPanel'
 import { useAuth } from '../state/AuthProvider'
 import { useProject } from '../state/ProjectProvider'
 import { getVideoTrack, isAudioClipId, resolveDeleteClipId, sortedClips } from '../timeline/helpers'
@@ -205,6 +206,7 @@ export function Toolbar() {
         </button>
       </div>
       <AkoolToolsPanel />
+      <AkoolRecordingPanel />
       {(isExporting || exportMessage.startsWith('Export failed')) && (
         <div className="export-status">
           {isExporting && (

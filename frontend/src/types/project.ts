@@ -1,5 +1,10 @@
 export type MaterialKind = 'video' | 'audio' | 'image'
-export type MaterialOrigin = 'upload' | 'tts' | 'image-generate' | 'image-to-video'
+export type MaterialOrigin =
+  | 'upload'
+  | 'tts'
+  | 'image-generate'
+  | 'image-to-video'
+  | 'akool-record'
 
 export interface MaterialEntry {
   id: string

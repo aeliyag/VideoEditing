@@ -29,6 +29,8 @@ export function materialLabel(origin: MaterialOrigin): string {
       return 'AI Image'
     case 'image-to-video':
       return 'AI Video'
+    case 'akool-record':
+      return 'Akool Recording'
   }
 }
 

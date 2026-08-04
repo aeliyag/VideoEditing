@@ -41,6 +41,10 @@ interface ProjectContextValue {
   dispatch: React.Dispatch<ProjectAction>
   mediaStore: MediaStore
   importFiles: (files: FileList | File[]) => Promise<void>
+  importRecordingFile: (
+    file: File,
+    options?: { addToTimeline?: boolean; name?: string },
+  ) => Promise<MediaAsset>
   addMaterialAsset: (params: {
     file: File
     name?: string
@@ -290,6 +294,43 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     [registerMaterialInStore],
   )
 
+  const importRecordingFile = useCallback(
+    async (
+      file: File,
+      options?: { addToTimeline?: boolean; name?: string },
+    ): Promise<MediaAsset> => {
+      setLibraryMessage('Importing recording…')
+      try {
+        const { asset, kind } = await probeFileAsMaterial(file)
+        registerMaterialInStore(asset)
+        const addToTimeline = options?.addToTimeline ?? false
+        const addToTimelineAtPlayhead =
+          addToTimeline && (kind === 'video' || kind === 'audio')
+            ? stateRef.current.ui.playhead
+            : undefined
+        dispatch({
+          type: 'ADD_MATERIAL',
+          asset,
+          name: options?.name ?? file.name,
+          kind,
+          origin: 'akool-record',
+          addToTimelineAtPlayhead,
+        })
+        const msg = addToTimelineAtPlayhead !== undefined
+          ? 'Recording added to materials and timeline.'
+          : 'Recording added to materials.'
+        setLibraryMessage(msg)
+        return asset
+      } catch (err) {
+        setLibraryMessage(
+          err instanceof Error ? `Import failed: ${err.message}` : 'Import failed.',
+        )
+        throw err
+      }
+    },
+    [registerMaterialInStore],
+  )
+
   const addMaterialToTimeline = useCallback(
     (materialId: string, track: 'video' | 'audio') => {
       const asset = mediaStoreRef.current.get(materialId)
@@ -509,6 +550,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       dispatch,
       mediaStore,
       importFiles,
+      importRecordingFile,
       addMaterialAsset,
       addMaterialToTimeline,
       removeMaterial,
@@ -540,6 +582,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       state,
       mediaStore,
       importFiles,
+      importRecordingFile,
       addMaterialAsset,
       addMaterialToTimeline,
       removeMaterial,

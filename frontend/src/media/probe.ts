@@ -104,7 +104,7 @@ function readVideoDuration(video: HTMLVideoElement): number {
   return 0
 }
 
-function fallbackVideoAsset(file: File, objectUrl: string): MediaAsset {
+function fallbackVideoAsset(file: File, objectUrl: string, hasAudio = true): MediaAsset {
   return {
     id: uuidv4(),
     file,
@@ -113,8 +113,30 @@ function fallbackVideoAsset(file: File, objectUrl: string): MediaAsset {
     fps: 30,
     width: 1920,
     height: 1080,
-    hasAudio: true,
+    hasAudio,
   }
+}
+
+function detectVideoHasAudio(video: HTMLVideoElement): boolean {
+  const extended = video as HTMLVideoElement & {
+    audioTracks?: { length: number }
+    mozHasAudio?: boolean
+    webkitAudioDecodedByteCount?: number
+  }
+
+  if (extended.audioTracks && extended.audioTracks.length > 0) {
+    return true
+  }
+
+  if (typeof extended.mozHasAudio === 'boolean') {
+    return extended.mozHasAudio
+  }
+
+  if (typeof extended.webkitAudioDecodedByteCount === 'number') {
+    return extended.webkitAudioDecodedByteCount > 0
+  }
+
+  return true
 }
 
 function probeVideoFile(file: File): Promise<MediaAsset> {
@@ -183,7 +205,7 @@ function probeVideoFile(file: File): Promise<MediaAsset> {
         fps: 30,
         width,
         height,
-        hasAudio: true,
+        hasAudio: detectVideoHasAudio(video),
       })
     }
 
