@@ -24,9 +24,6 @@ import {
 
 const FULL = { x: 0, y: 0, width: 1, height: 1 }
 const CENTER_HALF = { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }
-/** Fast pan — useful for visible frame-change renders, not quantization measurement. */
-const SLOW_PAN_START = { x: 0, y: 0, width: 0.45, height: 0.45 }
-const SLOW_PAN_END = { x: 0.35, y: 0.35, width: 0.45, height: 0.45 }
 /** ~29 px over 17.2 s at 1080p — matches real slow Ken Burns exports. */
 const VERY_SLOW_PAN_START = { x: 0, y: 0, width: 0.45, height: 0.45 }
 const VERY_SLOW_PAN_END = { x: 0.015, y: 0.015, width: 0.45, height: 0.45 }
