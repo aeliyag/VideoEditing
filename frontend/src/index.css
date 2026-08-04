@@ -408,6 +408,18 @@ label.btn {
   cursor: not-allowed;
 }
 
+.btn-shortcut {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -505,6 +517,11 @@ label.btn {
   height: 100%;
   display: block;
   object-fit: contain;
+}
+
+.preview-image {
+  position: relative;
+  z-index: 1;
 }
 
 .preview-placeholder {

@@ -5,6 +5,7 @@ export type MaterialOrigin =
   | 'image-generate'
   | 'image-to-video'
   | 'akool-record'
+  | 'freeze-frame'
 
 export interface MaterialEntry {
   id: string

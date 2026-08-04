@@ -1,13 +1,16 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile, toBlobURL } from '@ffmpeg/util'
 
-import type { ProjectDocument, MediaStore, TimelineClip } from '../types/project'
-import { isRedBoxEffect } from '../types/project'
-import { getVideoTrack, getAudioTrack, sortedClips, clipDuration, totalDuration } from '../timeline/helpers'
 import {
-  getCameraEffect,
-  resolveFrameRect,
-} from '../camera/frames'
+  buildExportGraph,
+  classifyExportAsset,
+  formatFfmpegError,
+  parseAudioStreamFromLogs,
+  parseVideoFpsFromLogs,
+  stageFileNameForAsset,
+} from './buildExportGraph'
+import type { ProjectDocument, MediaStore } from '../types/project'
+import { getVideoTrack, getAudioTrack, sortedClips } from '../timeline/helpers'
 
 const CORE_VERSION = '0.12.6'
 
@@ -39,14 +42,6 @@ async function getFfmpeg(onLog?: (message: string) => void): Promise<FFmpeg> {
   return loadPromise
 }
 
-function isAudioOnlyAsset(asset: { width: number; height: number }): boolean {
-  return asset.width === 0 && asset.height === 0
-}
-
-function stageFileName(index: number, asset: { width: number; height: number }): string {
-  return isAudioOnlyAsset(asset) ? `input_${index}.mp3` : `input_${index}.mp4`
-}
-
 function uniqueAudioSourceIds(doc: ProjectDocument): string[] {
   const track = getAudioTrack(doc)
   if (!track) {
@@ -63,67 +58,24 @@ function uniqueVideoSourceIds(doc: ProjectDocument): string[] {
   return [...new Set(sortedClips(track).map((c) => c.sourceId))]
 }
 
-function buildCameraFilter(
-  doc: ProjectDocument,
-  clip: TimelineClip,
-  inputLabel: string,
-  outLabel: string,
-  sourceWidth: number,
-  sourceHeight: number,
-): string {
-  const camera = getCameraEffect(clip)!
-  const start = resolveFrameRect(
-    doc,
-    camera.startFrameId,
-    sourceWidth,
-    sourceHeight,
-  )
-  const end = resolveFrameRect(
-    doc,
-    camera.endFrameId ?? camera.startFrameId,
-    sourceWidth,
-    sourceHeight,
-  )
-  const d = clipDuration(clip)
-  if (d <= 0) {
-    return `[${inputLabel}]null[${outLabel}]`
+async function probeStagedVideoStream(
+  ffmpeg: FFmpeg,
+  filename: string,
+): Promise<{ hasAudio: boolean; fps: number | null }> {
+  const logs: string[] = []
+  const onLog = ({ message }: { message: string }) => {
+    logs.push(message)
   }
-
-  // Render Ken Burns at 60fps with smoothstep easing, then downsample to 30fps.
-  // Higher temporal resolution + eased progress reduces zoompan stair-step jitter.
-  const renderFps = 60
-  const outputFps = 30
-  const frameCount = Math.max(2, Math.round(d * renderFps))
-  const lastFrame = Math.max(1, frameCount - 1)
-
-  // Output canvas is 16:9; zoompan samples a 16:9 window from the source.
-  const outW = Math.max(2, Math.round(sourceWidth / 2) * 2)
-  const outH = Math.max(2, Math.round((outW * 9) / 16 / 2) * 2)
-
-  const startCropW = start.width * sourceWidth
-  const endCropW = end.width * sourceWidth
-  const startZoom = outW / Math.max(1, startCropW)
-  const endZoom = outW / Math.max(1, endCropW)
-  const startX = start.x * sourceWidth
-  const startY = start.y * sourceHeight
-  const endX = end.x * sourceWidth
-  const endY = end.y * sourceHeight
-
-  // Smoothstep: p*p*(3-2*p) where p = on/lastFrame
-  const p = `(on/${lastFrame})`
-  const ease = `(${p}*${p}*(3-2*${p}))`
-
-  // Render at 16:9 via zoompan, then scale to the source frame size so concat
-  // matches non-camera clips and preview fill behavior.
-  return (
-    `[${inputLabel}]zoompan=` +
-    `z='${startZoom}+(${endZoom}-${startZoom})*${ease}':` +
-    `x='${startX}+(${endX}-${startX})*${ease}':` +
-    `y='${startY}+(${endY}-${startY})*${ease}':` +
-    `d=1:s=${outW}x${outH}:fps=${renderFps},` +
-    `fps=${outputFps},` +
-    `scale=${sourceWidth}:${sourceHeight}:flags=bicubic[${outLabel}]`
-  )
+  ffmpeg.on('log', onLog)
+  try {
+    await ffmpeg.exec(['-i', filename, '-f', 'null', '-'])
+  } catch {
+    // FFmpeg returns non-zero for probe-only runs; logs still contain stream info.
+  }
+  return {
+    hasAudio: parseAudioStreamFromLogs(logs),
+    fps: parseVideoFpsFromLogs(logs),
+  }
 }
 
 export type ExportProgress = (ratio: number, message: string) => void
@@ -146,6 +98,9 @@ export async function exportProjectToMp4(
   const audioSourceIds = uniqueAudioSourceIds(doc)
   const allSourceIds = [...videoSourceIds, ...audioSourceIds]
   const inputIndexBySource = new Map<string, number>()
+  const mediaKindBySource = new Map<string, ReturnType<typeof classifyExportAsset>>()
+  const audioStreamBySource = new Map<string, boolean>()
+  const fpsBySource = new Map<string, number>()
   const stagedNames: string[] = []
   const outputName = 'output.mp4'
 
@@ -161,124 +116,69 @@ export async function exportProjectToMp4(
     if (!asset) {
       throw new Error('Missing media for export.')
     }
-    const name = stageFileName(i, asset)
+    const kind = classifyExportAsset(asset)
+    const name = stageFileNameForAsset(i, asset)
     await ffmpeg.writeFile(name, await fetchFile(asset.file))
     stagedNames.push(name)
     inputIndexBySource.set(sourceId, i)
+    mediaKindBySource.set(sourceId, kind)
+
+    if (kind === 'video') {
+      const { hasAudio, fps } = await probeStagedVideoStream(ffmpeg, name)
+      audioStreamBySource.set(sourceId, hasAudio)
+      if (fps != null) {
+        fpsBySource.set(sourceId, fps)
+      }
+    } else if (kind === 'audio') {
+      audioStreamBySource.set(sourceId, true)
+    } else {
+      audioStreamBySource.set(sourceId, false)
+    }
+
     onProgress?.(0.1 + (0.2 * (i + 1)) / allSourceIds.length, `Staged ${asset.file.name}`)
   }
 
-  const hasVideoAudio = clips.some((c) => mediaStore.get(c.sourceId)?.hasAudio)
   const audioTrack = getAudioTrack(doc)
   const ttsClips = audioTrack ? sortedClips(audioTrack) : []
-  const exportLength = totalDuration(doc)
-  const filterParts: string[] = []
-  const concatInputs: string[] = []
 
-  clips.forEach((clip, index) => {
-    const inputIndex = inputIndexBySource.get(clip.sourceId)!
-    const asset = mediaStore.get(clip.sourceId)!
-    const start = clip.sourceStart
-    const end = clip.sourceEnd
-    const trimLabel = `vt${index}`
-    filterParts.push(
-      `[${inputIndex}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,fps=30[${trimLabel}]`,
-    )
-
-    const camera = getCameraEffect(clip)
-    let vOut = trimLabel
-    if (camera && (camera.startFrameId || camera.endFrameId)) {
-      const vLabel = `v${index}`
-      filterParts.push(
-        buildCameraFilter(doc, clip, trimLabel, vLabel, asset.width, asset.height),
-      )
-      vOut = vLabel
-    }
-
-    const redBox = clip.effects.find(isRedBoxEffect)
-    if (redBox) {
-      const annotationLabel = `va${index}`
-      const x = Math.round(redBox.rect.x * asset.width)
-      const y = Math.round(redBox.rect.y * asset.height)
-      const width = Math.round(redBox.rect.width * asset.width)
-      const height = Math.round(redBox.rect.height * asset.height)
-      const annotationStart = redBox.startOffset ?? 0
-      const annotationEnd = redBox.endOffset ?? clipDuration(clip)
-      filterParts.push(
-        `[${vOut}]drawbox=x=${x}:y=${y}:w=${width}:h=${height}:` +
-          `color=red@1:t=${redBox.strokeWidth}:` +
-          `enable='between(t,${annotationStart},${annotationEnd})'[${annotationLabel}]`,
-      )
-      vOut = annotationLabel
-    }
-    concatInputs.push(`[${vOut}]`)
-
-    if (hasVideoAudio) {
-      const aLabel = `a${index}`
-      filterParts.push(
-        `[${inputIndex}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[${aLabel}]`,
-      )
-      concatInputs.push(`[${aLabel}]`)
-    }
+  const graph = buildExportGraph({
+    doc,
+    clips,
+    ttsClips,
+    inputIndexBySource,
+    mediaStore,
+    mediaKindBySource,
+    audioStreamBySource,
+    fpsBySource,
   })
 
-  const n = clips.length
-  if (hasVideoAudio) {
-    filterParts.push(`${concatInputs.join('')}concat=n=${n}:v=1:a=1[outv][outa]`)
-  } else {
-    filterParts.push(`${concatInputs.join('')}concat=n=${n}:v=1:a=0[outv]`)
-  }
-
-  const mixInputs: string[] = []
-  if (ttsClips.length > 0) {
-    if (hasVideoAudio) {
-      mixInputs.push('[outa]')
-    } else {
-      filterParts.push(
-        `anullsrc=r=44100:cl=stereo:d=${Math.max(exportLength, 0.01)}[silentbed]`,
-      )
-      mixInputs.push('[silentbed]')
-    }
-
-    ttsClips.forEach((clip, index) => {
-      const inputIndex = inputIndexBySource.get(clip.sourceId)!
-      const delayMs = Math.max(0, Math.round(clip.timelineStart * 1000))
-      const label = `tts${index}`
-      filterParts.push(
-        `[${inputIndex}:a]atrim=start=${clip.sourceStart}:end=${clip.sourceEnd},` +
-          `asetpts=PTS-STARTPTS,adelay=${delayMs}|${delayMs}[${label}]`,
-      )
-      mixInputs.push(`[${label}]`)
-    })
-
-    filterParts.push(
-      `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0[aout]`,
-    )
-  }
-
-  const filterComplex = filterParts.join(';')
   const args = [
     ...stagedNames.flatMap((name) => ['-i', name]),
     '-filter_complex',
-    filterComplex,
+    graph.filterComplex,
     '-map',
     '[outv]',
   ]
-  if (ttsClips.length > 0) {
+  if (graph.useTtsMix) {
     args.push('-map', '[aout]', '-c:a', 'aac')
-  } else if (hasVideoAudio) {
+  } else if (graph.mapAudio) {
     args.push('-map', '[outa]', '-c:a', 'aac')
   }
   args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputName)
 
   onProgress?.(0.35, 'Encoding…')
+  const execLogs: string[] = []
+  ffmpeg.on('log', ({ message }) => {
+    execLogs.push(message)
+    onProgress?.(0.35, message)
+  })
   ffmpeg.on('progress', ({ progress }) => {
     onProgress?.(0.35 + progress * 0.6, 'Encoding…')
   })
 
   const exitCode = await ffmpeg.exec(args)
   if (exitCode !== 0) {
-    throw new Error(`FFmpeg could not render this project (exit code ${exitCode}).`)
+    throw new Error(formatFfmpegError(exitCode, execLogs))
   }
 
   onProgress?.(0.98, 'Finalizing…')

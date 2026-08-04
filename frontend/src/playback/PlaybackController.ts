@@ -1,6 +1,7 @@
 import type { ProjectDocument } from '../types/project'
 import type { MediaStore } from '../types/project'
 import type { TimelineClip } from '../types/project'
+import { isImageAsset } from '../export/buildExportGraph'
 import {
   audioClipAtTime,
   clipAtTime,
@@ -188,6 +189,34 @@ export class PlaybackController {
     }
   }
 
+  private isImageClip(clip: TimelineClip): boolean {
+    const material = this.document?.materials?.find((m) => m.id === clip.sourceId)
+    if (material?.kind === 'image') {
+      return true
+    }
+    if (material?.kind === 'video' || material?.kind === 'audio') {
+      return false
+    }
+    const asset = this.mediaStore.get(clip.sourceId)
+    if (!asset) {
+      return false
+    }
+    return isImageAsset(asset.file, asset)
+  }
+
+  private clearVideoElement(): void {
+    const video = this.video
+    if (!video) {
+      return
+    }
+    video.pause()
+    if (this.activeSourceId !== null) {
+      video.removeAttribute('src')
+      video.load()
+      this.activeSourceId = null
+    }
+  }
+
   private async syncVideoToTimeline(
     timelineTime: number,
     forceSeek: boolean,
@@ -200,7 +229,14 @@ export class PlaybackController {
 
     const clip = clipAtTime(doc, timelineTime)
     if (!clip) {
-      video.pause()
+      this.clearVideoElement()
+      this.activeClipId = null
+      return
+    }
+
+    if (this.isImageClip(clip)) {
+      this.clearVideoElement()
+      this.activeClipId = clip.id
       return
     }
 

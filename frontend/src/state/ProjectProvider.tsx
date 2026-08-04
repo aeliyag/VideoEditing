@@ -13,12 +13,23 @@ import { flushSync } from 'react-dom'
 
 import { exportProjectToMp4 } from '../export/ExportEngine'
 import { generateAkoolTts } from '../akool/client'
+import { getClipCameraRectAtTimelineTime } from '../camera/frames'
 import { importDebug } from '../debug/importDebug'
+import {
+  captureVideoFrameToFile,
+  createCaptureVideoElement,
+  FrameCaptureError,
+  loadCaptureVideoSource,
+} from '../media/captureFrame'
 import { probeMediaFile, revokeMediaAsset } from '../media/probe'
 import { inferMaterialKind, probeFileAsMaterial } from '../media/materialHelpers'
 import { playbackController } from '../playback/PlaybackController'
 import type { MaterialKind, MaterialOrigin, MediaAsset, MediaStore } from '../types/project'
-import { getVideoTrack, sortedClips, totalDuration } from '../timeline/helpers'
+import { clipAtTime, getVideoTrack, sortedClips, totalDuration } from '../timeline/helpers'
+import {
+  isVideoClipAtPlayhead,
+  sourceTimeAtPlayhead,
+} from '../timeline/freezeFrame'
 import {
   deleteProjectVersion,
   listSavedProjects,
@@ -33,6 +44,15 @@ import {
   type ProjectAction,
   type ProjectState,
 } from './projectReducer'
+import {
+  createHistoryStacks,
+  pushHistory,
+  redoHistory,
+  restoreAssetsFromSnapshot,
+  snapshotEditor,
+  undoHistory,
+  type HistoryStacks,
+} from './history'
 
 export type EffectEditorMode = 'camera' | 'red-box' | null
 
@@ -81,6 +101,12 @@ interface ProjectContextValue {
   effectEditorMode: EffectEditorMode
   openEffectEditor: (mode: Exclude<EffectEditorMode, null>) => void
   closeEffectEditor: () => void
+  canFreezeFrame: boolean
+  freezeFrameAtPlayhead: () => Promise<void>
+  undo: () => void
+  redo: () => void
+  canUndo: boolean
+  canRedo: boolean
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
@@ -108,6 +134,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   mediaStoreRef.current = mediaStore
   const stateRef = useRef(state)
   stateRef.current = state
+  const historyRef = useRef<HistoryStacks>(createHistoryStacks())
+  const captureVideoRef = useRef<HTMLVideoElement | null>(null)
+  const freezeInProgressRef = useRef(false)
+  const [historyTick, setHistoryTick] = useState(0)
 
   const openEffectEditor = useCallback((mode: Exclude<EffectEditorMode, null>) => {
     playbackController.pause()
@@ -141,10 +171,194 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const primaryFps = primaryAsset?.fps ?? 30
   const videoClipCount = getVideoTrack(state.document)?.clips.length ?? 0
 
+  const materialKindBySourceId = useMemo(() => {
+    const map = new Map<string, MaterialKind>()
+    for (const material of state.document.materials ?? []) {
+      map.set(material.id, material.kind)
+    }
+    return map
+  }, [state.document.materials])
+
+  const canFreezeFrame = useMemo(
+    () =>
+      isVideoClipAtPlayhead(
+        state.document,
+        state.ui.playhead,
+        materialKindBySourceId,
+      ) && Boolean(mediaStore.get(clipAtTime(state.document, state.ui.playhead)?.sourceId ?? '')),
+    [state.document, state.ui.playhead, materialKindBySourceId, mediaStore],
+  )
+
+  const canUndo = historyRef.current.past.length > 0
+  const canRedo = historyRef.current.future.length > 0
+  void historyTick
+
+  const pushUndoSnapshot = useCallback(() => {
+    historyRef.current = pushHistory(
+      historyRef.current,
+      snapshotEditor(stateRef.current, mediaStoreRef.current),
+    )
+    setHistoryTick((n) => n + 1)
+  }, [])
+
+  const undo = useCallback(() => {
+    const current = snapshotEditor(stateRef.current, mediaStoreRef.current)
+    const { stacks, snapshot } = undoHistory(historyRef.current, current)
+    historyRef.current = stacks
+    if (!snapshot) {
+      return
+    }
+    playbackController.pause()
+    const nextStore = restoreAssetsFromSnapshot(
+      mediaStoreRef.current,
+      snapshot.mediaStore,
+    )
+    mediaStoreRef.current = nextStore
+    setMediaStore(nextStore)
+    dispatch({
+      type: 'LOAD_PROJECT',
+      document: snapshot.state.document,
+      playhead: snapshot.state.ui.playhead,
+      selectedClipId: snapshot.state.ui.selectedClipId,
+    })
+    setLibraryMessage('Undid last action.')
+    setHistoryTick((n) => n + 1)
+  }, [])
+
+  const redo = useCallback(() => {
+    const current = snapshotEditor(stateRef.current, mediaStoreRef.current)
+    const { stacks, snapshot } = redoHistory(historyRef.current, current)
+    historyRef.current = stacks
+    if (!snapshot) {
+      return
+    }
+    playbackController.pause()
+    const nextStore = restoreAssetsFromSnapshot(
+      mediaStoreRef.current,
+      snapshot.mediaStore,
+    )
+    mediaStoreRef.current = nextStore
+    setMediaStore(nextStore)
+    dispatch({
+      type: 'LOAD_PROJECT',
+      document: snapshot.state.document,
+      playhead: snapshot.state.ui.playhead,
+      selectedClipId: snapshot.state.ui.selectedClipId,
+    })
+    setLibraryMessage('Redid last action.')
+    setHistoryTick((n) => n + 1)
+  }, [])
+
+  const registerMaterialInStore = useCallback((asset: MediaAsset) => {
+    importDebug('registerMaterialInStore', {
+      assetId: asset.id,
+      fileName: asset.file.name,
+      duration: asset.duration,
+      storeSizeBefore: mediaStoreRef.current.size,
+    })
+    const next = new Map(mediaStoreRef.current)
+    next.set(asset.id, asset)
+    mediaStoreRef.current = next
+    flushSync(() => {
+      setMediaStore(next)
+    })
+    importDebug('registerMaterialInStore done', { storeSizeAfter: next.size })
+  }, [])
+
+  const freezeFrameAtPlayhead = useCallback(async () => {
+    if (freezeInProgressRef.current) {
+      return
+    }
+    const currentState = stateRef.current
+    const playhead = currentState.ui.playhead
+    const clip = clipAtTime(currentState.document, playhead)
+    if (!clip) {
+      setLibraryMessage('Move the playhead over a video clip to create a freeze frame.')
+      return
+    }
+    if (
+      !isVideoClipAtPlayhead(
+        currentState.document,
+        playhead,
+        materialKindBySourceId,
+      )
+    ) {
+      setLibraryMessage('Freeze frame works on video clips only.')
+      return
+    }
+    const sourceAsset = mediaStoreRef.current.get(clip.sourceId)
+    if (!sourceAsset) {
+      setLibraryMessage('Source media is unavailable — re-import the video.')
+      return
+    }
+
+    freezeInProgressRef.current = true
+    setLibraryMessage('Capturing freeze frame…')
+    pushUndoSnapshot()
+
+    try {
+      if (!captureVideoRef.current) {
+        captureVideoRef.current = createCaptureVideoElement()
+      }
+      const captureVideo = captureVideoRef.current
+      await loadCaptureVideoSource(captureVideo, sourceAsset.objectUrl)
+
+      const cropRect = getClipCameraRectAtTimelineTime(
+        currentState.document,
+        clip,
+        playhead,
+        sourceAsset.width,
+        sourceAsset.height,
+      )
+      const sourceTime = sourceTimeAtPlayhead(clip, playhead, sourceAsset.fps || 30)
+      const baseName = sourceAsset.file.name.replace(/\.[^.]+$/, '') || 'video'
+      const fileName = `${baseName}_freeze_${Math.round(sourceTime * 1000)}ms.png`
+      const frameFile = await captureVideoFrameToFile(
+        captureVideo,
+        sourceTime,
+        fileName,
+        { cropRect },
+      )
+      const asset = await probeMediaFile(frameFile)
+      registerMaterialInStore(asset)
+      dispatch({
+        type: 'FREEZE_FRAME_AT_PLAYHEAD',
+        assetId: asset.id,
+        materialName: fileName,
+        fps: sourceAsset.fps || 30,
+      })
+      setLibraryMessage('Inserted 2s freeze frame at playhead.')
+    } catch (err) {
+      if (historyRef.current.past.length > 0) {
+        historyRef.current = {
+          ...historyRef.current,
+          past: historyRef.current.past.slice(0, -1),
+        }
+        setHistoryTick((n) => n + 1)
+      }
+      const message =
+        err instanceof FrameCaptureError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Could not capture freeze frame.'
+      setLibraryMessage(`Freeze frame failed: ${message}`)
+    } finally {
+      freezeInProgressRef.current = false
+    }
+  }, [materialKindBySourceId, pushUndoSnapshot, registerMaterialInStore])
+
   const refreshSavedProjects = useCallback(async () => {
     const list = await listSavedProjects(userId)
     setSavedProjects(list)
   }, [userId])
+
+  useEffect(() => {
+    return () => {
+      captureVideoRef.current?.remove()
+      captureVideoRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     void refreshSavedProjects()
@@ -183,22 +397,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       clearMediaStore(mediaStoreRef.current)
       playbackController.destroy()
     }
-  }, [])
-
-  const registerMaterialInStore = useCallback((asset: MediaAsset) => {
-    importDebug('registerMaterialInStore', {
-      assetId: asset.id,
-      fileName: asset.file.name,
-      duration: asset.duration,
-      storeSizeBefore: mediaStoreRef.current.size,
-    })
-    const next = new Map(mediaStoreRef.current)
-    next.set(asset.id, asset)
-    mediaStoreRef.current = next
-    flushSync(() => {
-      setMediaStore(next)
-    })
-    importDebug('registerMaterialInStore done', { storeSizeAfter: next.size })
   }, [])
 
   const addMaterialAsset = useCallback(
@@ -495,6 +693,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       playbackController.pause()
       clearMediaStore(mediaStoreRef.current)
       setMediaStore(loaded.mediaStore)
+      historyRef.current = createHistoryStacks()
+      setHistoryTick((n) => n + 1)
 
       let document = loaded.document
       if (!document.materials?.length) {
@@ -538,6 +738,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     playbackController.pause()
     clearMediaStore(mediaStoreRef.current)
     setMediaStore(new Map())
+    historyRef.current = createHistoryStacks()
+    setHistoryTick((n) => n + 1)
     dispatch({ type: 'RESET_PROJECT' })
     setActiveSaveId(null)
     setProjectName('Untitled timeline')
@@ -577,6 +779,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       effectEditorMode,
       openEffectEditor,
       closeEffectEditor,
+      canFreezeFrame,
+      freezeFrameAtPlayhead,
+      undo,
+      redo,
+      canUndo,
+      canRedo,
     }),
     [
       state,
@@ -608,6 +816,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       effectEditorMode,
       openEffectEditor,
       closeEffectEditor,
+      canFreezeFrame,
+      freezeFrameAtPlayhead,
+      undo,
+      redo,
+      canUndo,
+      canRedo,
     ],
   )
 

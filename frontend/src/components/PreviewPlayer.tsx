@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getCameraEffect,
@@ -12,6 +12,12 @@ import {
 } from '../camera/frames'
 import { clipAtTime, findClipById, mediaRectInContainer } from '../timeline/helpers'
 import { playbackController } from '../playback/PlaybackController'
+import {
+  isImagePreviewClip,
+  materialForClip,
+  resolvePreviewObjectUrl,
+  shouldApplyCameraPreview,
+} from '../preview/resolvePreviewMedia'
 import { useProject } from '../state/ProjectProvider'
 import type { FrameRect } from '../types/project'
 import { isRedBoxEffect } from '../types/project'
@@ -200,6 +206,7 @@ export function PreviewPlayer() {
     state,
     dispatch,
     primaryAsset,
+    mediaStore,
     effectEditorMode: editorMode,
     openEffectEditor,
     closeEffectEditor,
@@ -232,6 +239,24 @@ export function PreviewPlayer() {
     ? findClipById(state.document, state.ui.selectedClipId)
     : undefined
 
+  const activeClip =
+    clipAtTime(state.document, state.ui.playhead) ?? selectedClip ?? undefined
+
+  const activeAsset = activeClip
+    ? mediaStore.get(activeClip.sourceId)
+    : undefined
+
+  const isImagePreview = Boolean(
+    activeClip && activeAsset && isImagePreviewClip(state.document, activeClip, activeAsset),
+  )
+
+  const previewUrl = useMemo(() => {
+    if (!activeAsset) {
+      return ''
+    }
+    return resolvePreviewObjectUrl(activeAsset)
+  }, [activeAsset, mediaStore])
+
   const openEditor = (mode: 'camera' | 'red-box') => {
     const target =
       selectedClip ?? clipAtTime(state.document, state.ui.playhead)
@@ -246,9 +271,9 @@ export function PreviewPlayer() {
   }
 
   useEffect(() => {
-    playbackController.setVideoElement(videoRef.current)
+    playbackController.setVideoElement(isImagePreview ? null : videoRef.current)
     return () => playbackController.setVideoElement(null)
-  }, [primaryAsset?.id])
+  }, [primaryAsset?.id, isImagePreview, activeClip?.id])
 
   useEffect(() => {
     playbackController.setAudioElement(audioRef.current)
@@ -329,8 +354,33 @@ export function PreviewPlayer() {
     }
   }, [updateDisplayRect, primaryAsset?.id, editorMode])
 
-  const activeClip =
-    clipAtTime(state.document, state.ui.playhead) ?? selectedClip ?? undefined
+  useEffect(() => {
+    if (!activeClip) {
+      return
+    }
+    const material = materialForClip(state.document, activeClip)
+    console.table({
+      activeClipId: activeClip.id,
+      materialId: activeClip.sourceId,
+      materialType: material?.kind,
+      materialOrigin: material?.origin,
+      hasBlob: Boolean(activeAsset?.file),
+      resolvedUrl: previewUrl,
+    })
+  }, [
+    activeClip?.id,
+    activeClip?.sourceId,
+    activeAsset?.id,
+    activeAsset?.file,
+    previewUrl,
+    state.document.materials,
+  ])
+
+  const applyCameraPreview = Boolean(
+    activeClip &&
+      activeAsset &&
+      shouldApplyCameraPreview(state.document, activeClip, activeAsset),
+  )
 
   const videoMuted = Boolean(activeClip?.muteVideoAudio)
 
@@ -352,7 +402,7 @@ export function PreviewPlayer() {
   const previewRect =
     editorMode === 'camera' && selectedClip && !state.ui.isPlaying
       ? FULL_FRAME_RECT
-      : activeClip
+      : activeClip && applyCameraPreview
         ? getClipCameraRectAtTimelineTime(
             state.document,
             activeClip,
@@ -457,17 +507,47 @@ export function PreviewPlayer() {
               className="preview-stage"
               style={stageStyle}
             >
-              <video
-                ref={videoRef}
-                className="preview-video"
-                style={{
-                  transform: cropRectToVideoTransform(previewRect),
-                  transformOrigin: '0 0',
-                }}
-                playsInline
-                muted={videoMuted}
-                controls={false}
-              />
+              {isImagePreview && previewUrl ? (
+                <img
+                  key={`${activeClip?.id}:${previewUrl}`}
+                  src={previewUrl}
+                  className="preview-video preview-image"
+                  alt=""
+                  style={{
+                    transform: applyCameraPreview
+                      ? cropRectToVideoTransform(previewRect)
+                      : undefined,
+                    transformOrigin: '0 0',
+                  }}
+                  onLoad={(event) => {
+                    const img = event.currentTarget
+                    console.log('[preview img] loaded', {
+                      complete: img.complete,
+                      naturalWidth: img.naturalWidth,
+                      naturalHeight: img.naturalHeight,
+                      src: img.currentSrc,
+                    })
+                  }}
+                  onError={(event) => {
+                    console.error('[preview img] error', {
+                      src: event.currentTarget.currentSrc,
+                      materialId: activeClip?.sourceId,
+                    })
+                  }}
+                />
+              ) : (
+                <video
+                  ref={videoRef}
+                  className="preview-video"
+                  style={{
+                    transform: cropRectToVideoTransform(previewRect),
+                    transformOrigin: '0 0',
+                  }}
+                  playsInline
+                  muted={videoMuted}
+                  controls={false}
+                />
+              )}
               {selectedClip &&
                 editorMode === 'camera' &&
                 !state.ui.isPlaying &&

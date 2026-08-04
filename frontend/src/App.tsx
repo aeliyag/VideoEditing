@@ -5,21 +5,11 @@ import { MaterialsPanel } from './components/MaterialsPanel'
 import { PreviewPlayer } from './components/PreviewPlayer'
 import { Timeline } from './components/Timeline'
 import { Toolbar } from './components/Toolbar'
+import { isTypingTarget } from './keyboard/shortcuts'
 import { clipAtTime } from './timeline/helpers'
 import { playbackController } from './playback/PlaybackController'
 import { AuthProvider, useAuth } from './state/AuthProvider'
 import { ProjectProvider, useProject } from './state/ProjectProvider'
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  const tag = el?.tagName
-  return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    Boolean(el?.isContentEditable)
-  )
-}
 
 function EditorLayout() {
   const {
@@ -27,12 +17,21 @@ function EditorLayout() {
     dispatch,
     primaryFps,
     openEffectEditor,
+    canFreezeFrame,
+    freezeFrameAtPlayhead,
   } = useProject()
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) {
         return
+      }
+
+      if (event.repeat) {
+        const key = event.key.toLowerCase()
+        if (key === 'f') {
+          return
+        }
       }
 
       const key = event.key.toLowerCase()
@@ -46,6 +45,15 @@ function EditorLayout() {
       if (key === 'c') {
         event.preventDefault()
         dispatch({ type: 'SPLIT_AT_PLAYHEAD', fps: primaryFps })
+        return
+      }
+
+      if (key === 'f') {
+        if (!canFreezeFrame) {
+          return
+        }
+        event.preventDefault()
+        void freezeFrameAtPlayhead()
         return
       }
 
@@ -75,7 +83,9 @@ function EditorLayout() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
+    canFreezeFrame,
     dispatch,
+    freezeFrameAtPlayhead,
     openEffectEditor,
     primaryFps,
     state.document,

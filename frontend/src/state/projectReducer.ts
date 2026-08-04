@@ -27,6 +27,10 @@ import {
   renameFramePreset,
   saveClipCamera,
 } from '../camera/frameBankOps'
+import {
+  DEFAULT_FREEZE_FRAME_DURATION,
+  insertFreezeFrameAtPlayhead,
+} from '../timeline/freezeFrame'
 import { clampPlayhead, findClipById, resolveDeleteClipId, totalDuration } from '../timeline/helpers'
 import {
   removeClipRedBox,
@@ -55,6 +59,13 @@ export type ProjectAction =
   | { type: 'SELECT_CLIP'; clipId: string | null }
   | { type: 'SET_PLAYING'; isPlaying: boolean }
   | { type: 'SPLIT_AT_PLAYHEAD'; fps: number }
+  | {
+      type: 'FREEZE_FRAME_AT_PLAYHEAD'
+      assetId: string
+      materialName: string
+      fps: number
+      freezeDuration?: number
+    }
   | { type: 'DELETE_SELECTED' }
   | { type: 'DELETE_CLIP'; clipId: string }
   | { type: 'TRIM_CLIP'; clipId: string; side: 'start' | 'end'; edgeTimelineTime: number; mediaDuration: number; fps: number }
@@ -301,6 +312,28 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ui: {
           ...state.ui,
           playhead: clampPlayhead(state.ui.playhead, document),
+        },
+      }
+    }
+
+    case 'FREEZE_FRAME_AT_PLAYHEAD': {
+      const result = insertFreezeFrameAtPlayhead(
+        state.document,
+        state.ui.playhead,
+        action.fps,
+        action.assetId,
+        action.freezeDuration ?? DEFAULT_FREEZE_FRAME_DURATION,
+        action.materialName,
+      )
+      if (!result) {
+        return state
+      }
+      return {
+        document: result.document,
+        ui: {
+          ...state.ui,
+          selectedClipId: result.freezeClipId,
+          playhead: clampPlayhead(state.ui.playhead, result.document),
         },
       }
     }

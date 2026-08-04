@@ -40,6 +40,8 @@ export function Toolbar() {
     detachAudioFromSelected,
     mediaStore,
     importFiles,
+    canFreezeFrame,
+    freezeFrameAtPlayhead,
   } = useProject()
 
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -179,6 +181,15 @@ export function Toolbar() {
           onClick={() => dispatch({ type: 'SPLIT_AT_PLAYHEAD', fps: primaryFps })}
         >
           Split
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={!canFreezeFrame}
+          title="Insert a still image at the playhead (2 seconds). Shortcut: F"
+          onClick={() => void freezeFrameAtPlayhead()}
+        >
+          Freeze Frame <span className="btn-shortcut">F</span>
         </button>
         <button
           type="button"

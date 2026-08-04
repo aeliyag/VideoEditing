@@ -31,6 +31,8 @@ export function materialLabel(origin: MaterialOrigin): string {
       return 'AI Video'
     case 'akool-record':
       return 'Akool Recording'
+    case 'freeze-frame':
+      return 'Freeze Frame'
   }
 }
 
