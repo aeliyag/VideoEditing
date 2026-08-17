@@ -4,6 +4,8 @@ import {
   FULL_FRAME_RECT,
   clampCameraRect,
   clipLocalProgress,
+  cropRectToPreviewLayout,
+  isFullFrameRect,
   lerpFrameRect,
   resolveFrameRect,
 } from './frames'
@@ -60,5 +62,16 @@ describe('camera frames', () => {
     expect(clipLocalProgress(clip, 5)).toBe(0)
     expect(clipLocalProgress(clip, 10)).toBe(0.5)
     expect(clipLocalProgress(clip, 15)).toBe(1)
+  })
+
+  it('applies crisp transform-based crop for sharper preview', () => {
+    const crop = { x: 0.25, y: 0.1, width: 0.5, height: 0.5 }
+    expect(isFullFrameRect(FULL_FRAME_RECT)).toBe(true)
+    expect(isFullFrameRect(crop)).toBe(false)
+    expect(cropRectToPreviewLayout(FULL_FRAME_RECT)).toEqual({})
+    const layout = cropRectToPreviewLayout(crop)
+    expect(layout.transform).toContain('scale(2, 2)')
+    expect(layout.transform).toContain('translate(-25%, -10%)')
+    expect(layout.imageRendering).toBe('crisp-edges')
   })
 })

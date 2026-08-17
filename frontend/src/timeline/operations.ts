@@ -8,6 +8,7 @@ import {
   getAudioTrack,
   getVideoTrack,
   isAudioClipId,
+  minClipDuration,
   sortedClips,
   snapToFrame,
 } from './helpers'
@@ -170,12 +171,25 @@ function updateVideoTrack(doc: ProjectDocument, clips: TimelineClip[]): ProjectD
   }
 }
 
-function minClipDuration(fps: number): number {
-  return fps > 0 ? 1 / fps : 1 / 30
+function isStillImageClip(doc: ProjectDocument, clip: TimelineClip): boolean {
+  return Boolean(doc.materials?.some((m) => m.id === clip.sourceId && m.kind === 'image'))
 }
 
-function minAudioClipDuration(): number {
-  return 0.05
+function rippleClipsFromTime(
+  clips: TimelineClip[],
+  fromTime: number,
+  delta: number,
+  excludeIds: ReadonlySet<string>,
+): TimelineClip[] {
+  return clips.map((clip) => {
+    if (excludeIds.has(clip.id)) {
+      return clip
+    }
+    if (clip.timelineStart >= fromTime - 1e-9) {
+      return { ...clip, timelineStart: clip.timelineStart + delta }
+    }
+    return clip
+  })
 }
 
 export function splitAtPlayhead(
@@ -198,7 +212,7 @@ export function splitAtPlayhead(
   if (!track) {
     return doc
   }
-  const epsilon = minAudioClipDuration() / 2
+  const epsilon = minClipDuration(fps > 0 ? fps : 30) / 2
   const clip = sortedClips(track).find((c) => {
     const start = c.timelineStart
     const end = clipTimelineEnd(c)
@@ -224,7 +238,7 @@ function splitAudioClipAtPlayhead(
   if (!clip) {
     return doc
   }
-  const epsilon = minAudioClipDuration() / 2
+  const epsilon = minClipDuration(fps > 0 ? fps : 30) / 2
   const start = clip.timelineStart
   const end = clipTimelineEnd(clip)
   if (playhead <= start + epsilon || playhead >= end - epsilon) {
@@ -348,7 +362,7 @@ function trimAudioClip(
     return doc
   }
   const snapFps = fps > 0 ? fps : 30
-  const minDur = minAudioClipDuration()
+  const minDur = minClipDuration(snapFps)
 
   if (side === 'start') {
     const maxStart = clipTimelineEnd(clip) - minDur
@@ -450,14 +464,13 @@ function trimVideoClip(
     )
   }
 
-  const newEnd = Math.max(
-    clip.timelineStart + minDur,
-    Math.min(edgeTimelineTime, clipTimelineEnd(clip)),
-  )
+  const still = isStillImageClip(doc, clip)
+  const currentEnd = clipTimelineEnd(clip)
+  const maxEnd = still ? Number.POSITIVE_INFINITY : currentEnd
+  const newEnd = Math.max(clip.timelineStart + minDur, Math.min(edgeTimelineTime, maxEnd))
   const newDuration = newEnd - clip.timelineStart
   const oldDuration = clipDuration(clip)
-  const delta = oldDuration - newDuration
-  if (delta <= 0) {
+  if (!still && newDuration >= oldDuration - 1e-9) {
     return doc
   }
 
@@ -466,18 +479,39 @@ function trimVideoClip(
     return doc
   }
 
+  const nextSourceEnd = still ? newSourceEnd : Math.min(newSourceEnd, mediaDuration)
+  if (Math.abs(nextSourceEnd - clip.sourceEnd) < 1e-9) {
+    return doc
+  }
+
   const trimmed: TimelineClip = {
     ...clip,
-    sourceEnd: Math.min(newSourceEnd, mediaDuration),
+    sourceEnd: nextSourceEnd,
   }
 
   const trimmedDuration = clipDuration(trimmed)
-  const rippleBy = oldDuration - trimmedDuration
-  if (rippleBy <= 0) {
+  const rippleDelta = trimmedDuration - oldDuration
+  if (Math.abs(rippleDelta) < 1e-9) {
     return updateVideoTrack(
       doc,
       track.clips.map((c) => (c.id === clipId ? trimmed : c)),
     )
+  }
+
+  if (still) {
+    const excludeIds = new Set([clipId])
+    return {
+      ...doc,
+      tracks: doc.tracks.map((t) => ({
+        ...t,
+        clips: rippleClipsFromTime(
+          t.clips.map((c) => (c.id === clipId ? trimmed : c)),
+          currentEnd,
+          rippleDelta,
+          excludeIds,
+        ),
+      })),
+    }
   }
 
   const nextClips = track.clips.map((c) => {
@@ -485,7 +519,7 @@ function trimVideoClip(
       return trimmed
     }
     if (c.timelineStart > clip.timelineStart) {
-      return { ...c, timelineStart: c.timelineStart - rippleBy }
+      return { ...c, timelineStart: c.timelineStart + rippleDelta }
     }
     return c
   })
@@ -553,4 +587,40 @@ function packClipsInOrder(clips: TimelineClip[]): TimelineClip[] {
     cursor += clipDuration(clip)
     return packed
   })
+}
+
+/** Stretch or clamp clips that use a replaced source whose duration changed. */
+export function retargetClipsToNewDuration(
+  doc: ProjectDocument,
+  sourceId: string,
+  previousDuration: number,
+  nextDuration: number,
+): ProjectDocument {
+  if (nextDuration <= 0) {
+    return doc
+  }
+
+  return {
+    ...doc,
+    tracks: doc.tracks.map((track) => ({
+      ...track,
+      clips: track.clips.map((clip) => {
+        if (clip.sourceId !== sourceId) {
+          return clip
+        }
+        const usedFullSource =
+          clip.sourceStart <= 1e-3 &&
+          Math.abs(clip.sourceEnd - previousDuration) <= 0.08
+        if (usedFullSource) {
+          return { ...clip, sourceStart: 0, sourceEnd: nextDuration }
+        }
+        const sourceStart = Math.min(clip.sourceStart, Math.max(0, nextDuration - 0.04))
+        const sourceEnd = Math.max(
+          sourceStart + 0.04,
+          Math.min(clip.sourceEnd, nextDuration),
+        )
+        return { ...clip, sourceStart, sourceEnd }
+      }),
+    })),
+  }
 }

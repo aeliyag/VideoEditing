@@ -24,7 +24,7 @@ import {
 import { probeMediaFile, revokeMediaAsset } from '../media/probe'
 import { inferMaterialKind, probeFileAsMaterial } from '../media/materialHelpers'
 import { playbackController } from '../playback/PlaybackController'
-import type { MaterialKind, MaterialOrigin, MediaAsset, MediaStore } from '../types/project'
+import type { MaterialKind, MaterialOrigin, MediaAsset, MediaStore, TtsGeneration } from '../types/project'
 import { clipAtTime, getVideoTrack, sortedClips, totalDuration } from '../timeline/helpers'
 import {
   isVideoClipAtPlayhead,
@@ -63,7 +63,7 @@ interface ProjectContextValue {
   importFiles: (files: FileList | File[]) => Promise<void>
   importRecordingFile: (
     file: File,
-    options?: { addToTimeline?: boolean; name?: string },
+    options?: { addToTimeline?: boolean; name?: string; durationHint?: number },
   ) => Promise<MediaAsset>
   addMaterialAsset: (params: {
     file: File
@@ -71,11 +71,25 @@ interface ProjectContextValue {
     kind: MaterialKind
     origin: MaterialOrigin
     addFirstVideoToTimeline?: boolean
+    tts?: TtsGeneration
   }) => Promise<MediaAsset>
   addMaterialToTimeline: (materialId: string, track: 'video' | 'audio') => void
   removeMaterial: (materialId: string) => void
   detachAudioFromSelected: () => void
-  addTtsAudio: (blob: Blob, fileName: string, timelineStart: number) => Promise<void>
+  addTtsAudio: (
+    blob: Blob,
+    fileName: string,
+    timelineStart: number,
+    tts?: TtsGeneration,
+  ) => Promise<void>
+  replaceTtsAudio: (
+    materialId: string,
+    blob: Blob,
+    tts: TtsGeneration,
+  ) => Promise<void>
+  beginTtsEdit: (materialId: string) => void
+  clearTtsEdit: () => void
+  ttsEdit: { materialId: string; tts: TtsGeneration } | null
   generateTtsAndAdd: (params: {
     inputText: string
     voiceId: string
@@ -107,6 +121,9 @@ interface ProjectContextValue {
   redo: () => void
   canUndo: boolean
   canRedo: boolean
+  recordUndoSnapshot: () => void
+  elementsPanelOpen: boolean
+  setElementsPanelOpen: (open: boolean) => void
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
@@ -120,7 +137,13 @@ function clearMediaStore(store: MediaStore): void {
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const userId = user?.id ?? null
-  const [state, dispatch] = useReducer(projectReducer, undefined, createInitialState)
+  const stateRef = useRef<ProjectState>(createInitialState())
+  const reducerWithRef = useCallback((state: ProjectState, action: ProjectAction): ProjectState => {
+    const next = projectReducer(state, action)
+    stateRef.current = next
+    return next
+  }, [])
+  const [state, dispatch] = useReducer(reducerWithRef, undefined, createInitialState)
   const [mediaStore, setMediaStore] = useState<MediaStore>(() => new Map())
   const [exportProgress, setExportProgress] = useState(0)
   const [exportMessage, setExportMessage] = useState('')
@@ -130,10 +153,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([])
   const [libraryMessage, setLibraryMessage] = useState('')
   const [effectEditorMode, setEffectEditorMode] = useState<EffectEditorMode>(null)
+  const [elementsPanelOpen, setElementsPanelOpen] = useState(true)
+  const [ttsEdit, setTtsEdit] = useState<{ materialId: string; tts: TtsGeneration } | null>(
+    null,
+  )
   const mediaStoreRef = useRef(mediaStore)
   mediaStoreRef.current = mediaStore
-  const stateRef = useRef(state)
-  stateRef.current = state
   const historyRef = useRef<HistoryStacks>(createHistoryStacks())
   const captureVideoRef = useRef<HTMLVideoElement | null>(null)
   const freezeInProgressRef = useRef(false)
@@ -323,10 +348,27 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       registerMaterialInStore(asset)
       dispatch({
         type: 'FREEZE_FRAME_AT_PLAYHEAD',
+        playhead,
         assetId: asset.id,
         materialName: fileName,
         fps: sourceAsset.fps || 30,
       })
+      const inserted = getVideoTrack(stateRef.current.document)?.clips.some(
+        (candidate) => candidate.sourceId === asset.id,
+      )
+      if (!inserted) {
+        if (historyRef.current.past.length > 0) {
+          historyRef.current = {
+            ...historyRef.current,
+            past: historyRef.current.past.slice(0, -1),
+          }
+          setHistoryTick((n) => n + 1)
+        }
+        setLibraryMessage('Could not insert freeze frame at the playhead.')
+        return
+      }
+      playbackController.pause()
+      playbackController.seek(playhead)
       setLibraryMessage('Inserted 2s freeze frame at playhead.')
     } catch (err) {
       if (historyRef.current.past.length > 0) {
@@ -406,6 +448,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       kind: MaterialKind
       origin: MaterialOrigin
       addFirstVideoToTimeline?: boolean
+      tts?: TtsGeneration
     }) => {
       const { asset, kind } = await probeFileAsMaterial(params.file)
       const resolvedKind = params.kind ?? kind
@@ -417,6 +460,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         kind: resolvedKind,
         origin: params.origin,
         addFirstVideoToTimeline: params.addFirstVideoToTimeline,
+        tts: params.tts,
       })
       return asset
     },
@@ -495,11 +539,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const importRecordingFile = useCallback(
     async (
       file: File,
-      options?: { addToTimeline?: boolean; name?: string },
+      options?: { addToTimeline?: boolean; name?: string; durationHint?: number },
     ): Promise<MediaAsset> => {
       setLibraryMessage('Importing recording…')
       try {
-        const { asset, kind } = await probeFileAsMaterial(file)
+        const { asset, kind } = await probeFileAsMaterial(file, {
+          durationHint: options?.durationHint,
+        })
         registerMaterialInStore(asset)
         const addToTimeline = options?.addToTimeline ?? false
         const addToTimelineAtPlayhead =
@@ -579,19 +625,55 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [state.ui.selectedClipId])
 
   const addTtsAudio = useCallback(
-    async (blob: Blob, fileName: string, timelineStart: number) => {
+    async (blob: Blob, fileName: string, timelineStart: number, tts?: TtsGeneration) => {
       const file = new File([blob], fileName, { type: blob.type || 'audio/mpeg' })
       const asset = await probeMediaFile(file)
-      setMediaStore((prev) => {
-        const next = new Map(prev)
-        next.set(asset.id, asset)
-        return next
-      })
-      dispatch({ type: 'ADD_TTS_CLIP', asset, timelineStart })
+      registerMaterialInStore(asset)
+      dispatch({ type: 'ADD_TTS_CLIP', asset, timelineStart, tts })
       setLibraryMessage('Added TTS clip to timeline.')
     },
-    [],
+    [registerMaterialInStore],
   )
+
+  const replaceTtsAudio = useCallback(
+    async (materialId: string, blob: Blob, tts: TtsGeneration) => {
+      const previous = mediaStoreRef.current.get(materialId)
+      const file = new File([blob], previous?.file.name ?? `tts_${Date.now()}.mp3`, {
+        type: blob.type || 'audio/mpeg',
+      })
+      const probed = await probeMediaFile(file)
+      const asset: MediaAsset = { ...probed, id: materialId }
+      if (previous) {
+        revokeMediaAsset(previous)
+      }
+      registerMaterialInStore(asset)
+      dispatch({
+        type: 'REPLACE_TTS_MATERIAL',
+        materialId,
+        previousDuration: previous?.duration ?? probed.duration,
+        nextDuration: probed.duration,
+        tts,
+      })
+      setLibraryMessage('Updated TTS audio with the new voice.')
+    },
+    [registerMaterialInStore],
+  )
+
+  const beginTtsEdit = useCallback((materialId: string) => {
+    const material = stateRef.current.document.materials?.find((m) => m.id === materialId)
+    if (!material || material.origin !== 'tts') {
+      setLibraryMessage('Only generated speech can be modified.')
+      return
+    }
+    setTtsEdit({
+      materialId,
+      tts: material.tts ?? { prompt: '', voiceId: '', rate: '100%' },
+    })
+  }, [])
+
+  const clearTtsEdit = useCallback(() => {
+    setTtsEdit(null)
+  }, [])
 
   const generateTtsAndAdd = useCallback(
     async (params: { inputText: string; voiceId: string; rate: string }) => {
@@ -602,7 +684,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       })
       const timelineStart = state.ui.playhead
       const safeName = `tts_${Date.now()}.mp3`
-      await addTtsAudio(blob, safeName, timelineStart)
+      await addTtsAudio(blob, safeName, timelineStart, {
+        prompt: params.inputText,
+        voiceId: params.voiceId,
+        rate: params.rate,
+      })
     },
     [addTtsAudio, state.ui.playhead],
   )
@@ -612,7 +698,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setExportProgress(0)
     setExportMessage('Starting export…')
     try {
-      const blob = await exportProjectToMp4(state.document, mediaStore, (ratio, message) => {
+      const blob = await exportProjectToMp4(
+        stateRef.current.document,
+        mediaStoreRef.current,
+        (ratio, message) => {
         setExportProgress(ratio)
         setExportMessage(message)
       })
@@ -629,7 +718,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsExporting(false)
     }
-  }, [state.document, mediaStore, projectName])
+  }, [projectName])
 
   const saveCurrentProject = useCallback(
     async (name?: string) => {
@@ -637,10 +726,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const meta = await saveProjectVersion(userId, {
         id: activeSaveId ?? undefined,
         name: resolvedName,
-        document: state.document,
-        mediaStore,
-        playhead: state.ui.playhead,
-        selectedClipId: state.ui.selectedClipId,
+        document: stateRef.current.document,
+        mediaStore: mediaStoreRef.current,
+        playhead: stateRef.current.ui.playhead,
+        selectedClipId: stateRef.current.ui.selectedClipId,
       })
       setActiveSaveId(meta.id)
       setProjectName(meta.name)
@@ -650,12 +739,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     [
       userId,
       activeSaveId,
-      mediaStore,
       projectName,
       refreshSavedProjects,
-      state.document,
-      state.ui.playhead,
-      state.ui.selectedClipId,
     ],
   )
 
@@ -663,24 +748,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     async (name: string) => {
       const meta = await saveProjectVersion(userId, {
         name,
-        document: state.document,
-        mediaStore,
-        playhead: state.ui.playhead,
-        selectedClipId: state.ui.selectedClipId,
+        document: stateRef.current.document,
+        mediaStore: mediaStoreRef.current,
+        playhead: stateRef.current.ui.playhead,
+        selectedClipId: stateRef.current.ui.selectedClipId,
       })
       setActiveSaveId(meta.id)
       setProjectName(meta.name)
       setLibraryMessage(`Saved new version “${meta.name}”`)
       await refreshSavedProjects()
     },
-    [
-      userId,
-      mediaStore,
-      refreshSavedProjects,
-      state.document,
-      state.ui.playhead,
-      state.ui.selectedClipId,
-    ],
+    [userId, refreshSavedProjects],
   )
 
   const loadSavedProject = useCallback(
@@ -714,6 +792,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         playhead: loaded.playhead,
         selectedClipId: loaded.selectedClipId,
       })
+      playbackController.seek(loaded.playhead)
       setActiveSaveId(id)
       setProjectName(loaded.name)
       setLibraryMessage(`Opened “${loaded.name}”`)
@@ -758,6 +837,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       removeMaterial,
       detachAudioFromSelected,
       addTtsAudio,
+      replaceTtsAudio,
+      beginTtsEdit,
+      clearTtsEdit,
+      ttsEdit,
       generateTtsAndAdd,
       exportVideo,
       exportProgress,
@@ -785,6 +868,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       redo,
       canUndo,
       canRedo,
+      recordUndoSnapshot: pushUndoSnapshot,
+      elementsPanelOpen,
+      setElementsPanelOpen,
     }),
     [
       state,
@@ -796,6 +882,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       removeMaterial,
       detachAudioFromSelected,
       addTtsAudio,
+      replaceTtsAudio,
+      beginTtsEdit,
+      clearTtsEdit,
+      ttsEdit,
       generateTtsAndAdd,
       exportVideo,
       exportProgress,
@@ -822,6 +912,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       redo,
       canUndo,
       canRedo,
+      pushUndoSnapshot,
+      elementsPanelOpen,
     ],
   )
 

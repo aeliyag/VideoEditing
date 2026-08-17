@@ -54,6 +54,43 @@ describe('import flow reducer', () => {
     const videoClips = state.document.tracks.find((t) => t.kind === 'video')?.clips ?? []
     expect(videoClips).toHaveLength(1)
   })
+
+  it('stores TTS prompt metadata on the material', () => {
+    const asset = fakeVideoAsset('tts-1')
+    let state = createInitialState()
+    state = projectReducer(state, {
+      type: 'ADD_TTS_CLIP',
+      asset: { ...asset, duration: 3, hasAudio: true, width: 0, height: 0, fps: 0 },
+      timelineStart: 0,
+      tts: { prompt: 'Hello there', voiceId: 'voice-a', rate: '100%' },
+    })
+    expect(state.document.materials[0]?.tts).toEqual({
+      prompt: 'Hello there',
+      voiceId: 'voice-a',
+      rate: '100%',
+    })
+  })
+
+  it('updates saved TTS prompt when replacing the voice', () => {
+    const asset = fakeVideoAsset('tts-1')
+    let state = createInitialState()
+    state = projectReducer(state, {
+      type: 'ADD_TTS_CLIP',
+      asset: { ...asset, duration: 3, hasAudio: true, width: 0, height: 0, fps: 0 },
+      timelineStart: 0,
+      tts: { prompt: 'Hello there', voiceId: 'voice-a', rate: '100%' },
+    })
+    state = projectReducer(state, {
+      type: 'REPLACE_TTS_MATERIAL',
+      materialId: 'tts-1',
+      previousDuration: 3,
+      nextDuration: 4,
+      tts: { prompt: 'Hello there', voiceId: 'voice-b', rate: '90%' },
+    })
+    expect(state.document.materials[0]?.tts?.voiceId).toBe('voice-b')
+    const audioClip = state.document.tracks.find((t) => t.kind === 'audio')?.clips[0]
+    expect(audioClip?.sourceEnd).toBe(4)
+  })
 })
 
 describe('probeMediaFile', () => {

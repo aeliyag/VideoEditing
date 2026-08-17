@@ -128,7 +128,11 @@ export function TtsPanel() {
     try {
       const blob = await requestTtsBlob(inputText)
       const safeName = `tts_${Date.now()}.mp3`
-      await addTtsAudio(blob, safeName, state.ui.playhead)
+      await addTtsAudio(blob, safeName, state.ui.playhead, {
+        prompt: inputText,
+        voiceId,
+        rate,
+      })
       setText('')
       clearPreview()
       setOpen(false)

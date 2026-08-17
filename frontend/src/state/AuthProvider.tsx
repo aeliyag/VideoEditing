@@ -9,18 +9,31 @@ import {
 } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 
+import {
+  authRedirectUrl,
+  mapSignInError,
+  parseSignUpResult,
+  type SignUpResult,
+} from '../lib/authHelpers'
 import { supabase } from '../lib/supabase'
+
+export type { SignUpResult }
 
 interface AuthContextValue {
   session: Session | null
   user: User | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
-  signUp: (email: string, password: string) => Promise<{ error: string | null }>
+  signUp: (email: string, password: string) => Promise<SignUpResult>
+  resetPassword: (email: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+
+function redirectTo(): string {
+  return authRedirectUrl(window.location.origin, import.meta.env.BASE_URL ?? '/')
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
@@ -51,11 +64,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    return { error: error?.message ?? null }
+    return { error: error ? mapSignInError(error) : null }
   }, [])
 
-  const signUp = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({ email, password })
+  const signUp = useCallback(async (email: string, password: string): Promise<SignUpResult> => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: redirectTo() },
+    })
+    return parseSignUpResult(
+      { session: data.session, user: data.user },
+      error,
+    )
+  }, [])
+
+  const resetPassword = useCallback(async (email: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: redirectTo(),
+    })
     return { error: error?.message ?? null }
   }, [])
 
@@ -70,9 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       signIn,
       signUp,
+      resetPassword,
       signOut,
     }),
-    [session, loading, signIn, signUp, signOut],
+    [session, loading, signIn, signUp, resetPassword, signOut],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

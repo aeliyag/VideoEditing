@@ -5,11 +5,12 @@ import {
   fetchAkoolVoices,
   generateAkoolImage,
   generateAkoolTts,
+  downloadAkoolRemoteFile,
   waitForAkoolImage,
   waitForAkoolImageToVideo,
   type AkoolVoice,
 } from '../akool/client'
-import { fetchRemoteAsFile, uploadTempAssetUrl } from '../lib/uploadTempAsset'
+import { uploadTempAssetUrl } from '../lib/uploadTempAsset'
 import { useAuth } from '../state/AuthProvider'
 import { useProject } from '../state/ProjectProvider'
 
@@ -25,7 +26,8 @@ function previewCacheKey(inputText: string, voiceId: string, rate: string): stri
 
 export function AkoolToolsPanel() {
   const { user } = useAuth()
-  const { state, mediaStore, addMaterialAsset, addTtsAudio } = useProject()
+  const { state, mediaStore, addMaterialAsset, addTtsAudio, replaceTtsAudio, ttsEdit, clearTtsEdit } =
+    useProject()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<AkoolTab>('tts')
 
@@ -100,6 +102,24 @@ export function AkoolToolsPanel() {
     })
   }, [])
 
+  useEffect(() => {
+    if (!ttsEdit) {
+      return
+    }
+    setOpen(true)
+    setTab('tts')
+    setText(ttsEdit.tts.prompt)
+    if (ttsEdit.tts.voiceId) {
+      setVoiceId(ttsEdit.tts.voiceId)
+    }
+    if (ttsEdit.tts.rate) {
+      setRate(ttsEdit.tts.rate)
+    }
+    setError('')
+    setStatus('Saved narration loaded. Change the voice, then update.')
+    clearPreview()
+  }, [ttsEdit, clearPreview])
+
   const requestTtsBlob = async (inputText: string): Promise<Blob> => {
     const key = previewCacheKey(inputText, voiceId, rate)
     if (previewBlob && previewKey === key) {
@@ -128,16 +148,24 @@ export function AkoolToolsPanel() {
     setStatus('')
     try {
       const blob = await requestTtsBlob(inputText)
+      const tts = { prompt: inputText, voiceId, rate }
+      if (ttsEdit) {
+        await replaceTtsAudio(ttsEdit.materialId, blob, tts)
+        setStatus('Updated audio with the new voice. Narration is still saved.')
+        return
+      }
       const fileName = `tts_${Date.now()}.mp3`
       if (alsoTimeline) {
-        await addTtsAudio(blob, fileName, state.ui.playhead)
+        await addTtsAudio(blob, fileName, state.ui.playhead, tts)
       } else {
         const file = new File([blob], fileName, { type: 'audio/mpeg' })
-        await addMaterialAsset({ file, name: fileName, kind: 'audio', origin: 'tts' })
+        await addMaterialAsset({ file, name: fileName, kind: 'audio', origin: 'tts', tts })
       }
-      setText('')
-      clearPreview()
-      setStatus(alsoTimeline ? 'Added TTS to materials and timeline.' : 'Added TTS to materials.')
+      setStatus(
+        alsoTimeline
+          ? 'Added TTS to materials and timeline. Use Modify to change the voice later.'
+          : 'Added TTS to materials. Use Modify to change the voice later.',
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'TTS failed')
     } finally {
@@ -161,7 +189,7 @@ export function AkoolToolsPanel() {
         resolution: imageResolution,
       })
       const imageUrl = await waitForAkoolImage(modelId, setStatus)
-      const file = await fetchRemoteAsFile(imageUrl, `ai_image_${Date.now()}.png`, 'image/png')
+      const file = await downloadAkoolRemoteFile(imageUrl, `ai_image_${Date.now()}.png`, 'image/png')
       await addMaterialAsset({
         file,
         name: file.name,
@@ -210,7 +238,7 @@ export function AkoolToolsPanel() {
         videoLength: i2vLength,
       })
       const videoUrl = await waitForAkoolImageToVideo(taskId, setStatus)
-      const file = await fetchRemoteAsFile(videoUrl, `ai_video_${Date.now()}.mp4`, 'video/mp4')
+      const file = await downloadAkoolRemoteFile(videoUrl, `ai_video_${Date.now()}.mp4`, 'video/mp4')
       await addMaterialAsset({
         file,
         name: file.name,
@@ -252,6 +280,12 @@ export function AkoolToolsPanel() {
 
           {tab === 'tts' && (
             <div className="akool-tab-panel">
+              {ttsEdit && (
+                <p className="crop-panel-hint">
+                  Modifying saved audio. Your narration is loaded — pick a new voice and
+                  update.
+                </p>
+              )}
               <label className="tts-field">
                 Narration
                 <textarea
@@ -293,22 +327,48 @@ export function AkoolToolsPanel() {
                 <audio ref={previewAudioRef} controls src={previewUrl} className="tts-preview-audio" />
               )}
               <div className="frame-bank-buttons">
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  disabled={busy || !text.trim()}
-                  onClick={() => void onAddTtsToMaterials(false)}
-                >
-                  Save to materials
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-small btn-primary"
-                  disabled={busy || !text.trim()}
-                  onClick={() => void onAddTtsToMaterials(true)}
-                >
-                  Save + add to timeline
-                </button>
+                {ttsEdit ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-small btn-primary"
+                      disabled={busy || !text.trim() || !voiceId}
+                      onClick={() => void onAddTtsToMaterials(false)}
+                    >
+                      Update audio
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      disabled={busy}
+                      onClick={() => {
+                        clearTtsEdit()
+                        setStatus('')
+                      }}
+                    >
+                      Cancel modify
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      disabled={busy || !text.trim()}
+                      onClick={() => void onAddTtsToMaterials(false)}
+                    >
+                      Save to materials
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-small btn-primary"
+                      disabled={busy || !text.trim()}
+                      onClick={() => void onAddTtsToMaterials(true)}
+                    >
+                      Save + add to timeline
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}

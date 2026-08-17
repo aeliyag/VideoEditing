@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useProject } from '../state/ProjectProvider'
 import { getVideoTrack, getAudioTrack, sortedClips, totalDuration } from '../timeline/helpers'
@@ -6,12 +6,16 @@ import { playbackController } from '../playback/PlaybackController'
 import { TimelineClipBlock } from './TimelineClip'
 import { AudioTimelineClip } from './AudioTimelineClip'
 import { AnnotationTimelineItem } from './AnnotationTimelineItem'
-import { isRedBoxEffect } from '../types/project'
+import { ElementTimelineItem } from './ElementTimelineItem'
+import { isElementEffect, isRedBoxEffect } from '../types/project'
 
 const PX_PER_SECOND = 80
+/** Empty space after the last clip so freeze frames / stills can be dragged longer. */
+const TIMELINE_END_PAD_SECONDS = 8
 
 export function Timeline() {
-  const { state, dispatch, primaryFps, primaryAsset, mediaStore } = useProject()
+  const { state, dispatch, primaryFps, primaryAsset, mediaStore, openEffectEditor } =
+    useProject()
   const trackRef = useRef<HTMLDivElement>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
 
@@ -20,7 +24,7 @@ export function Timeline() {
   const clips = track ? sortedClips(track) : []
   const audioClips = audioTrack ? sortedClips(audioTrack) : []
   const duration = totalDuration(state.document)
-  const width = Math.max(duration * PX_PER_SECOND, 400)
+  const width = Math.max((duration + TIMELINE_END_PAD_SECONDS) * PX_PER_SECOND, 400)
 
   const timeFromClientX = useCallback(
     (clientX: number) => {
@@ -71,12 +75,21 @@ export function Timeline() {
 
   const rulerMarks = useMemo(() => {
     const marks: number[] = []
+    const rulerEnd = duration + TIMELINE_END_PAD_SECONDS
     const step = duration > 60 ? 10 : duration > 20 ? 5 : 1
-    for (let t = 0; t <= duration; t += step) {
+    for (let t = 0; t <= rulerEnd; t += step) {
       marks.push(t)
     }
     return marks
   }, [duration])
+
+  const timelineElements = clips.flatMap((clip) =>
+    [...clip.effects]
+      .filter(isElementEffect)
+      .sort((a, b) => a.z - b.z)
+      .map((effect) => ({ clip, effect })),
+  )
+  const extraElementRows = Math.max(0, timelineElements.length - 1)
 
   if (!track || clips.length === 0) {
     return (
@@ -89,6 +102,10 @@ export function Timeline() {
   }
 
   const hasAudioLane = audioClips.length > 0
+  const trackStyle = {
+    width,
+    ['--extra-element-rows' as string]: String(extraElementRows),
+  } as CSSProperties
 
   return (
     <section className="timeline-panel">
@@ -101,8 +118,10 @@ export function Timeline() {
       </div>
       <div
         ref={trackRef}
-        className={`timeline-track ${hasAudioLane ? 'timeline-track-with-audio' : ''}`}
-        style={{ width }}
+        className={`timeline-track${hasAudioLane ? ' timeline-track-with-audio' : ''}${
+          timelineElements.length > 0 ? ' timeline-track-with-elements' : ''
+        }`}
+        style={trackStyle}
         onPointerDown={onTrackPointerDown}
       >
         {clips.map((clip) => {
@@ -145,6 +164,11 @@ export function Timeline() {
               clip={clip}
               effect={effect}
               pxPerSecond={PX_PER_SECOND}
+              selected={state.ui.selectedRedBoxEffectId === effect.id}
+              onSelect={() => {
+                dispatch({ type: 'SELECT_RED_BOX', clipId: clip.id, effectId: effect.id })
+                openEffectEditor('red-box')
+              }}
               onTrim={(side, timelineTime) =>
                 dispatch({
                   type: 'TRIM_RED_BOX',
@@ -157,6 +181,29 @@ export function Timeline() {
             />
           )),
         )}
+        <div className="annotation-row-label elements-row-label">Elements</div>
+        {timelineElements.map(({ clip, effect }, rowIndex) => (
+            <ElementTimelineItem
+              key={effect.id}
+              clip={clip}
+              effect={effect}
+              pxPerSecond={PX_PER_SECOND}
+              rowIndex={rowIndex}
+              selected={state.ui.selectedElementId === effect.id}
+              onSelect={() => {
+                dispatch({ type: 'SELECT_ELEMENT', clipId: clip.id, elementId: effect.id })
+              }}
+              onTrim={(side, timelineTime) =>
+                dispatch({
+                  type: 'TRIM_CLIP_ELEMENT',
+                  clipId: clip.id,
+                  elementId: effect.id,
+                  side,
+                  timelineTime,
+                })
+              }
+            />
+        ))}
         {hasAudioLane && <div className="annotation-row-label audio-row-label">Audio</div>}
         {audioClips.map((clip) => {
           const asset = mediaStore.get(clip.sourceId)
@@ -204,8 +251,8 @@ export function Timeline() {
         />
       </div>
       <p className="timeline-hint">
-        Click to seek · select a clip · Delete/Backspace removes selected or playhead clip · drag
-        to reorder · trim edges
+        Click to seek · select a clip · Delete/Backspace removes · drag to reorder · drag trim
+        handles to shorten or extend clips · Cmd/Ctrl+Z to undo
       </p>
     </section>
   )

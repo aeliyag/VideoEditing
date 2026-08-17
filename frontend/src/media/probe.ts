@@ -3,7 +3,48 @@ import { v4 as uuidv4 } from 'uuid'
 import { importDebug } from '../debug/importDebug'
 import type { MediaAsset } from '../types/project'
 
-export function probeMediaFile(file: File): Promise<MediaAsset> {
+export interface ProbeMediaOptions {
+  /** Used when the container has no duration metadata (common for MediaRecorder WebM). */
+  durationHint?: number
+}
+
+export function resolveProbedVideoDuration(input: {
+  elementDuration: number
+  seekableEnd: number
+  discoveredEnd?: number
+  durationHint?: number
+}): number {
+  if (
+    Number.isFinite(input.elementDuration) &&
+    input.elementDuration > 0 &&
+    input.elementDuration !== Infinity
+  ) {
+    return input.elementDuration
+  }
+  if (Number.isFinite(input.seekableEnd) && input.seekableEnd > 0) {
+    return input.seekableEnd
+  }
+  if (
+    input.discoveredEnd != null &&
+    Number.isFinite(input.discoveredEnd) &&
+    input.discoveredEnd > 0
+  ) {
+    return input.discoveredEnd
+  }
+  if (
+    input.durationHint != null &&
+    Number.isFinite(input.durationHint) &&
+    input.durationHint > 0
+  ) {
+    return input.durationHint
+  }
+  return 0
+}
+
+export function probeMediaFile(
+  file: File,
+  options?: ProbeMediaOptions,
+): Promise<MediaAsset> {
   importDebug('probeMediaFile start', { name: file.name, type: file.type, size: file.size })
   const isLikelyImage =
     file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name)
@@ -22,7 +63,7 @@ export function probeMediaFile(file: File): Promise<MediaAsset> {
     return probeAudioFile(file)
   }
   importDebug('probe route: video')
-  return probeVideoFile(file)
+  return probeVideoFile(file, options)
 }
 
 function probeImageFile(file: File): Promise<MediaAsset> {
@@ -91,17 +132,18 @@ function probeAudioFile(file: File): Promise<MediaAsset> {
   })
 }
 
-function readVideoDuration(video: HTMLVideoElement): number {
-  if (Number.isFinite(video.duration) && video.duration > 0 && video.duration !== Infinity) {
-    return video.duration
-  }
-  if (video.seekable.length > 0) {
-    const end = video.seekable.end(video.seekable.length - 1)
-    if (Number.isFinite(end) && end > 0) {
-      return end
-    }
-  }
-  return 0
+function readVideoDuration(
+  video: HTMLVideoElement,
+  extra?: { discoveredEnd?: number; durationHint?: number },
+): number {
+  const seekableEnd =
+    video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : 0
+  return resolveProbedVideoDuration({
+    elementDuration: video.duration,
+    seekableEnd,
+    discoveredEnd: extra?.discoveredEnd,
+    durationHint: extra?.durationHint,
+  })
 }
 
 function fallbackVideoAsset(file: File, objectUrl: string, hasAudio = true): MediaAsset {
@@ -139,7 +181,7 @@ function detectVideoHasAudio(video: HTMLVideoElement): boolean {
   return true
 }
 
-function probeVideoFile(file: File): Promise<MediaAsset> {
+function probeVideoFile(file: File, options?: ProbeMediaOptions): Promise<MediaAsset> {
   importDebug('probeVideoFile start', { name: file.name })
   return new Promise((resolve) => {
     const objectUrl = URL.createObjectURL(file)
@@ -160,6 +202,7 @@ function probeVideoFile(file: File): Promise<MediaAsset> {
     video.load()
 
     let settled = false
+    let seekingForDuration = false
 
     const cleanup = () => {
       video.removeAttribute('src')
@@ -177,18 +220,17 @@ function probeVideoFile(file: File): Promise<MediaAsset> {
       resolve(fallbackVideoAsset(file, objectUrl))
     }
 
-    const finish = () => {
+    const finish = (extra?: { discoveredEnd?: number }) => {
       if (settled) {
         return
       }
 
-      let duration = readVideoDuration(video)
+      const duration = readVideoDuration(video, {
+        discoveredEnd: extra?.discoveredEnd,
+        durationHint: options?.durationHint,
+      })
       const width = video.videoWidth
       const height = video.videoHeight
-
-      if (duration <= 0 && width > 0 && height > 0) {
-        duration = 10
-      }
 
       if (duration <= 0 || width <= 0 || height <= 0) {
         return
@@ -221,34 +263,57 @@ function probeVideoFile(file: File): Promise<MediaAsset> {
         })
     }
 
-    video.onloadedmetadata = finish
+    const seekToEndForDuration = () => {
+      if (settled || seekingForDuration) {
+        return
+      }
+      seekingForDuration = true
+      try {
+        video.currentTime = 1e101
+      } catch {
+        seekingForDuration = false
+        kickDecode()
+      }
+    }
+
+    const onDurationSeeked = () => {
+      if (!seekingForDuration || settled) {
+        return
+      }
+      const discoveredEnd = video.currentTime
+      seekingForDuration = false
+      try {
+        video.currentTime = 0
+      } catch {
+        /* ignore */
+      }
+      finish({ discoveredEnd })
+    }
+
+    video.onloadedmetadata = () => finish()
     video.onloadeddata = () => {
       finish()
       if (!settled) {
         kickDecode()
       }
     }
-    video.ondurationchange = finish
+    video.ondurationchange = () => finish()
     video.oncanplay = () => {
       finish()
       if (!settled) {
-        try {
-          video.currentTime = 1e101
-        } catch {
-          kickDecode()
-        }
+        seekToEndForDuration()
       }
     }
+    video.onseeked = onDurationSeeked
     video.onerror = () => fail()
 
     video.ontimeupdate = () => {
-      if (video.currentTime > 0) {
+      if (seekingForDuration && video.currentTime > 0.25) {
+        onDurationSeeked()
+        return
+      }
+      if (!seekingForDuration && video.currentTime > 0) {
         video.ontimeupdate = null
-        try {
-          video.currentTime = 0
-        } catch {
-          /* ignore */
-        }
         finish()
       }
     }

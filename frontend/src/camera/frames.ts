@@ -145,6 +145,35 @@ export function getClipCameraRectAtTimelineTime(
   return lerpFrameRect(start, end, progress, sourceWidth, sourceHeight)
 }
 
+export function isFullFrameRect(rect: FrameRect): boolean {
+  const r = clampFreeRect(rect)
+  return r.x <= 0.001 && r.y <= 0.001 && r.width >= 0.999 && r.height >= 0.999
+}
+
+/** Layout styles for a sharp cropped preview (renders crop at higher resolution). */
+export function cropRectToPreviewLayout(rect: FrameRect): {
+  transform?: string
+  transformOrigin?: string
+  imageRendering?: 'crisp-edges'
+} {
+  const r = clampFreeRect(rect)
+  if (isFullFrameRect(r)) {
+    return {}
+  }
+
+  // Use transform-based cropping but render quality hints for sharper upscaling
+  const scaleX = 1 / Math.max(0.001, r.width)
+  const scaleY = 1 / Math.max(0.001, r.height)
+  const tx = -r.x * 100
+  const ty = -r.y * 100
+
+  return {
+    transform: `scale(${scaleX}, ${scaleY}) translate(${tx}%, ${ty}%)`,
+    transformOrigin: '0 0',
+    imageRendering: 'crisp-edges',
+  }
+}
+
 /** CSS transform so the crop fills the stage (may be non-uniform if aspect differs). */
 export function cropRectToVideoTransform(rect: FrameRect): string {
   const r = clampFreeRect(rect)

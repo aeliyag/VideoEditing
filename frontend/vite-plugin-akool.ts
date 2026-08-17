@@ -123,6 +123,19 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+function isAllowedAkoolAssetUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') {
+      return false
+    }
+    const host = parsed.hostname.toLowerCase()
+    return host.endsWith('.cloudfront.net') || host.endsWith('.akool.com')
+  } catch {
+    return false
+  }
+}
+
 async function pollTtsUrl(apiKey: string, audioModelId: string): Promise<string> {
   const maxAttempts = 60
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -388,6 +401,28 @@ export function akoolProxyPlugin(options: AkoolProxyOptions): Plugin {
               status: item.status,
               videoUrl: item.video_url,
             })
+            return
+          }
+
+          if (pathname === '/api/akool/download' && req.method === 'GET') {
+            const remoteUrl = parsedUrl.searchParams.get('url')?.trim()
+            if (!remoteUrl || !isAllowedAkoolAssetUrl(remoteUrl)) {
+              sendJson(res, 400, { error: 'Invalid or missing download url' })
+              return
+            }
+            const assetRes = await fetch(remoteUrl)
+            if (!assetRes.ok) {
+              sendJson(res, 502, { error: 'Failed to download generated asset' })
+              return
+            }
+            const buffer = Buffer.from(await assetRes.arrayBuffer())
+            res.statusCode = 200
+            res.setHeader(
+              'Content-Type',
+              assetRes.headers.get('content-type') ?? 'application/octet-stream',
+            )
+            res.setHeader('Content-Length', buffer.length)
+            res.end(buffer)
             return
           }
 

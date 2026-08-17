@@ -1,31 +1,43 @@
 import { useState } from 'react'
 
-import type { RedBoxEffect, TimelineClip } from '../types/project'
+import type { ElementEffect, TimelineClip } from '../types/project'
 import { playbackController } from '../playback/PlaybackController'
+
+const ELEMENT_TIMELINE_ROW_HEIGHT = 28
+const ELEMENT_TIMELINE_FIRST_ROW_TOP = 142
 
 interface Props {
   clip: TimelineClip
-  effect: RedBoxEffect
+  effect: ElementEffect
   pxPerSecond: number
+  rowIndex: number
   selected?: boolean
   onSelect?: () => void
   onTrim: (side: 'start' | 'end', timelineTime: number) => void
 }
 
-export function AnnotationTimelineItem({
+function elementTimelineLabel(effect: ElementEffect): string {
+  if (effect.kind === 'text') {
+    return effect.text.slice(0, 16) || 'Text'
+  }
+  if (effect.kind === 'image') {
+    return 'Image'
+  }
+  return effect.shape === 'ellipse' ? 'Ellipse' : 'Shape'
+}
+
+export function ElementTimelineItem({
   clip,
   effect,
   pxPerSecond,
+  rowIndex,
   selected = false,
   onSelect,
   onTrim,
 }: Props) {
   const [trimming, setTrimming] = useState<'start' | 'end' | null>(null)
   const left = (clip.timelineStart + effect.startOffset) * pxPerSecond
-  const width = Math.max(
-    4,
-    (effect.endOffset - effect.startOffset) * pxPerSecond,
-  )
+  const width = Math.max(4, (effect.endOffset - effect.startOffset) * pxPerSecond)
 
   const onPointerDown =
     (side: 'start' | 'end') => (event: React.PointerEvent) => {
@@ -55,8 +67,12 @@ export function AnnotationTimelineItem({
 
   return (
     <div
-      className={`annotation-timeline-item${selected ? ' annotation-timeline-item-selected' : ''}`}
-      style={{ left, width }}
+      className={`element-timeline-item${selected ? ' element-timeline-item-selected' : ''}`}
+      style={{
+        left,
+        width,
+        top: ELEMENT_TIMELINE_FIRST_ROW_TOP + rowIndex * ELEMENT_TIMELINE_ROW_HEIGHT,
+      }}
       onClick={() => onSelect?.()}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -67,7 +83,7 @@ export function AnnotationTimelineItem({
       role="button"
       tabIndex={0}
     >
-      <span>Red box</span>
+      <span>{elementTimelineLabel(effect)}</span>
       <div
         className="annotation-trim annotation-trim-start"
         onPointerDown={onPointerDown('start')}

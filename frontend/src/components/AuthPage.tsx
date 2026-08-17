@@ -5,23 +5,49 @@ import { useAuth } from '../state/AuthProvider'
 type AuthMode = 'sign-in' | 'sign-up'
 
 export function AuthPage() {
-  const { signIn, signUp } = useAuth()
+  const { signIn, signUp, resetPassword } = useAuth()
   const [mode, setMode] = useState<AuthMode>('sign-in')
+  const [forgotPassword, setForgotPassword] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const onSubmit = async (event: React.FormEvent) => {
-    event.preventDefault()
+  const clearFeedback = () => {
     setError(null)
     setMessage(null)
+  }
+
+  const switchMode = (nextMode: AuthMode) => {
+    setMode(nextMode)
+    setForgotPassword(false)
+    clearFeedback()
+  }
+
+  const onSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    clearFeedback()
     setBusy(true)
     try {
       const trimmedEmail = email.trim()
-      if (!trimmedEmail || !password) {
-        setError('Email and password are required.')
+      if (!trimmedEmail) {
+        setError('Email is required.')
+        return
+      }
+
+      if (forgotPassword) {
+        const result = await resetPassword(trimmedEmail)
+        if (result.error) {
+          setError(result.error)
+        } else {
+          setMessage('Password reset link sent. Check your email to continue.')
+        }
+        return
+      }
+
+      if (!password) {
+        setError('Password is required.')
         return
       }
       if (password.length < 6) {
@@ -38,8 +64,16 @@ export function AuthPage() {
         const result = await signUp(trimmedEmail, password)
         if (result.error) {
           setError(result.error)
-        } else {
+        } else if (result.duplicateEmail) {
+          setError(
+            'An account with this email already exists. Sign in instead, or use Forgot password.',
+          )
+        } else if (result.needsEmailConfirmation) {
+          setMessage('Check your email to confirm your account before signing in.')
+        } else if (result.sessionCreated) {
           setMessage('Account created. You are now signed in.')
+        } else {
+          setMessage('Account created. Sign in to continue.')
         }
       }
     } finally {
@@ -52,7 +86,9 @@ export function AuthPage() {
       <div className="auth-card">
         <h1 className="auth-title">Video Timeline Editor</h1>
         <p className="auth-subtitle">
-          Sign in to save projects to the cloud and use TTS features.
+          {forgotPassword
+            ? 'Enter your email and we will send a password reset link.'
+            : 'Sign in to save projects to the cloud and use TTS features.'}
         </p>
 
         {!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY ? (
@@ -62,30 +98,24 @@ export function AuthPage() {
           </p>
         ) : null}
 
-        <div className="auth-tabs">
-          <button
-            type="button"
-            className={`auth-tab ${mode === 'sign-in' ? 'auth-tab-active' : ''}`}
-            onClick={() => {
-              setMode('sign-in')
-              setError(null)
-              setMessage(null)
-            }}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            className={`auth-tab ${mode === 'sign-up' ? 'auth-tab-active' : ''}`}
-            onClick={() => {
-              setMode('sign-up')
-              setError(null)
-              setMessage(null)
-            }}
-          >
-            Sign up
-          </button>
-        </div>
+        {!forgotPassword ? (
+          <div className="auth-tabs">
+            <button
+              type="button"
+              className={`auth-tab ${mode === 'sign-in' ? 'auth-tab-active' : ''}`}
+              onClick={() => switchMode('sign-in')}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              className={`auth-tab ${mode === 'sign-up' ? 'auth-tab-active' : ''}`}
+              onClick={() => switchMode('sign-up')}
+            >
+              Sign up
+            </button>
+          </div>
+        ) : null}
 
         <form className="auth-form" onSubmit={(e) => void onSubmit(e)}>
           <label className="auth-field">
@@ -99,25 +129,60 @@ export function AuthPage() {
               required
             />
           </label>
-          <label className="auth-field">
-            Password
-            <input
-              type="password"
-              autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              required
-              minLength={6}
-            />
-          </label>
+
+          {!forgotPassword ? (
+            <label className="auth-field">
+              Password
+              <input
+                type="password"
+                autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+                minLength={6}
+              />
+            </label>
+          ) : null}
+
+          {mode === 'sign-in' && !forgotPassword ? (
+            <button
+              type="button"
+              className="auth-link"
+              onClick={() => {
+                setForgotPassword(true)
+                clearFeedback()
+              }}
+            >
+              Forgot password?
+            </button>
+          ) : null}
 
           {error && <p className="auth-error">{error}</p>}
           {message && <p className="auth-message">{message}</p>}
 
           <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
-            {busy ? 'Please wait…' : mode === 'sign-in' ? 'Sign in' : 'Create account'}
+            {busy
+              ? 'Please wait…'
+              : forgotPassword
+                ? 'Send reset link'
+                : mode === 'sign-in'
+                  ? 'Sign in'
+                  : 'Create account'}
           </button>
+
+          {forgotPassword ? (
+            <button
+              type="button"
+              className="auth-link auth-link-back"
+              onClick={() => {
+                setForgotPassword(false)
+                clearFeedback()
+              }}
+            >
+              Back to sign in
+            </button>
+          ) : null}
         </form>
       </div>
     </div>

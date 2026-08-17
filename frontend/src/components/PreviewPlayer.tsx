@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import {
   getCameraEffect,
@@ -8,7 +8,7 @@ import {
   CAMERA_ASPECT,
   clampCameraRect,
   clampFreeRect,
-  cropRectToVideoTransform,
+  cropRectToPreviewLayout,
 } from '../camera/frames'
 import { clipAtTime, findClipById, mediaRectInContainer } from '../timeline/helpers'
 import { playbackController } from '../playback/PlaybackController'
@@ -18,187 +18,23 @@ import {
   resolvePreviewObjectUrl,
   shouldApplyCameraPreview,
 } from '../preview/resolvePreviewMedia'
+import { EditableRect, rectToPixel } from './EditableRect'
+import { ElementsLayer } from './ElementsLayer'
 import { useProject } from '../state/ProjectProvider'
-import type { FrameRect } from '../types/project'
+import type { FrameRect, RedBoxEffect } from '../types/project'
 import { isRedBoxEffect } from '../types/project'
 
 type CameraSlot = 'start' | 'end'
 
-interface EditableRectProps {
-  rect: FrameRect
-  display: { x: number; y: number; width: number; height: number }
-  className: string
-  onChange: (rect: FrameRect) => void
-  /** Pixel aspect width/height. Camera uses 16/9; omit for free-form (red box). */
-  pixelAspect?: number
-  sourceWidth?: number
-  sourceHeight?: number
+const DEFAULT_RED_BOX_DRAFT: FrameRect = {
+  x: 0.25,
+  y: 0.25,
+  width: 0.35,
+  height: 0.25,
 }
 
-function EditableRect({
-  rect,
-  display,
-  className,
-  onChange,
-  pixelAspect,
-  sourceWidth = 1920,
-  sourceHeight = 1080,
-}: EditableRectProps) {
-  const px = rectToPixel(rect, display, pixelAspect, sourceWidth, sourceHeight)
-
-  const startDrag = (event: React.PointerEvent) => {
-    const startX = event.clientX
-    const startY = event.clientY
-    const startRect = { ...px }
-    const onMove = (e: PointerEvent) => {
-      onChange(
-        pixelRectToNormalized(
-          {
-            ...startRect,
-            x: startRect.x + e.clientX - startX,
-            y: startRect.y + e.clientY - startY,
-          },
-          display,
-          pixelAspect,
-          sourceWidth,
-          sourceHeight,
-        ),
-      )
-    }
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
-  const startResize =
-    (corner: 'nw' | 'ne' | 'sw' | 'se') => (event: React.PointerEvent) => {
-      event.stopPropagation()
-      const startX = event.clientX
-      const startY = event.clientY
-      const startRect = { ...px }
-      const lockSquare = !pixelAspect && event.shiftKey
-      const aspect = pixelAspect ?? (lockSquare ? 1 : undefined)
-      const onMove = (e: PointerEvent) => {
-        const dx = e.clientX - startX
-        const dy = e.clientY - startY
-        let x = startRect.x
-        let y = startRect.y
-        let width = startRect.width
-        let height = startRect.height
-
-        if (aspect) {
-          const delta =
-            corner === 'se'
-              ? Math.max(dx, dy * aspect)
-              : corner === 'nw'
-                ? Math.max(-dx, -dy * aspect)
-                : corner === 'ne'
-                  ? Math.max(dx, -dy * aspect)
-                  : Math.max(-dx, dy * aspect)
-          width = Math.max(20, startRect.width + delta)
-          height = width / aspect
-          if (corner === 'nw' || corner === 'sw') {
-            x = startRect.x + startRect.width - width
-          }
-          if (corner === 'nw' || corner === 'ne') {
-            y = startRect.y + startRect.height - height
-          }
-        } else {
-          if (corner === 'nw' || corner === 'sw') {
-            x = startRect.x + dx
-            width = startRect.width - dx
-          } else {
-            width = startRect.width + dx
-          }
-          if (corner === 'nw' || corner === 'ne') {
-            y = startRect.y + dy
-            height = startRect.height - dy
-          } else {
-            height = startRect.height + dy
-          }
-          width = Math.max(20, width)
-          height = Math.max(20, height)
-        }
-
-        onChange(
-          pixelRectToNormalized(
-            { x, y, width, height },
-            display,
-            aspect === 1 && !pixelAspect ? undefined : pixelAspect,
-            sourceWidth,
-            sourceHeight,
-            aspect === 1 && !pixelAspect,
-          ),
-        )
-      }
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    }
-
-  return (
-    <div
-      className={className}
-      style={{ left: px.x, top: px.y, width: px.width, height: px.height }}
-      onPointerDown={startDrag}
-    >
-      {(['nw', 'ne', 'sw', 'se'] as const).map((corner) => (
-        <div
-          key={corner}
-          className={`crop-resize-handle crop-resize-${corner}`}
-          onPointerDown={startResize(corner)}
-        />
-      ))}
-    </div>
-  )
-}
-
-function pixelRectToNormalized(
-  px: { x: number; y: number; width: number; height: number },
-  display: { x: number; y: number; width: number; height: number },
-  pixelAspect: number | undefined,
-  sourceWidth: number,
-  sourceHeight: number,
-  forceSquare = false,
-): FrameRect {
-  const raw = {
-    x: (px.x - display.x) / display.width,
-    y: (px.y - display.y) / display.height,
-    width: px.width / display.width,
-    height: px.height / display.height,
-  }
-  if (pixelAspect) {
-    return clampCameraRect(raw, sourceWidth, sourceHeight, pixelAspect)
-  }
-  if (forceSquare) {
-    const size = Math.max(0.02, Math.min(raw.width, raw.height))
-    return clampFreeRect({ ...raw, width: size, height: size })
-  }
-  return clampFreeRect(raw)
-}
-
-function rectToPixel(
-  rect: FrameRect,
-  display: { x: number; y: number; width: number; height: number },
-  pixelAspect: number | undefined,
-  sourceWidth: number,
-  sourceHeight: number,
-): { x: number; y: number; width: number; height: number } {
-  const r = pixelAspect
-    ? clampCameraRect(rect, sourceWidth, sourceHeight, pixelAspect)
-    : clampFreeRect(rect)
-  return {
-    x: display.x + r.x * display.width,
-    y: display.y + r.y * display.height,
-    width: r.width * display.width,
-    height: r.height * display.height,
-  }
+function redBoxVisibleAtOffset(effect: RedBoxEffect, offset: number): boolean {
+  return offset >= effect.startOffset && offset <= effect.endOffset
 }
 
 export function PreviewPlayer() {
@@ -210,9 +46,12 @@ export function PreviewPlayer() {
     effectEditorMode: editorMode,
     openEffectEditor,
     closeEffectEditor,
+    recordUndoSnapshot,
   } = useProject()
-  const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const setVideoNode = useCallback((node: HTMLVideoElement | null) => {
+    playbackController.setVideoElement(node)
+  }, [])
   const stageRef = useRef<HTMLDivElement>(null)
   const [cameraSlot, setCameraSlot] = useState<CameraSlot>('start')
   const [startDraft, setStartDraft] = useState<{ rect: FrameRect; name: string }>({
@@ -223,13 +62,14 @@ export function PreviewPlayer() {
     null,
   )
   const [includeEnd, setIncludeEnd] = useState(false)
-  const [redBoxDraft, setRedBoxDraft] = useState<FrameRect>({
-    x: 0.25,
-    y: 0.25,
-    width: 0.35,
-    height: 0.25,
-  })
+  const [redBoxDraft, setRedBoxDraft] = useState<FrameRect>(DEFAULT_RED_BOX_DRAFT)
   const [displayRect, setDisplayRect] = useState({ x: 0, y: 0, width: 0, height: 0 })
+  const [activeClipDisplayRect, setActiveClipDisplayRect] = useState({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  })
   const [saveNotice, setSaveNotice] = useState('')
 
   const sourceWidth = primaryAsset?.width || 1920
@@ -267,13 +107,20 @@ export function PreviewPlayer() {
       dispatch({ type: 'SELECT_CLIP', clipId: target.id })
     }
     setSaveNotice('')
+    if (mode === 'red-box') {
+      const clipOffset = state.ui.playhead - target.timelineStart
+      const atPlayhead = target.effects
+        .filter(isRedBoxEffect)
+        .find((effect) => redBoxVisibleAtOffset(effect, clipOffset))
+      dispatch({
+        type: 'SELECT_RED_BOX',
+        clipId: target.id,
+        effectId: atPlayhead?.id ?? null,
+      })
+      setRedBoxDraft(atPlayhead?.rect ?? DEFAULT_RED_BOX_DRAFT)
+    }
     openEffectEditor(mode)
   }
-
-  useEffect(() => {
-    playbackController.setVideoElement(isImagePreview ? null : videoRef.current)
-    return () => playbackController.setVideoElement(null)
-  }, [primaryAsset?.id, isImagePreview, activeClip?.id])
 
   useEffect(() => {
     playbackController.setAudioElement(audioRef.current)
@@ -318,11 +165,22 @@ export function PreviewPlayer() {
       setIncludeEnd(false)
     }
     setCameraSlot('start')
-    const redBox = selectedClip.effects.find(isRedBoxEffect)
-    if (redBox) {
-      setRedBoxDraft(redBox.rect)
-    }
   }, [selectedClip?.id, editorMode, sourceWidth, sourceHeight])
+
+  useEffect(() => {
+    if (editorMode !== 'red-box' || !selectedClip || !state.ui.selectedRedBoxEffectId) {
+      return
+    }
+    const selected = selectedClip.effects
+      .filter(isRedBoxEffect)
+      .find((effect) => effect.id === state.ui.selectedRedBoxEffectId)
+    if (selected) {
+      setRedBoxDraft(selected.rect)
+    }
+  }, [editorMode, selectedClip, state.ui.selectedRedBoxEffectId])
+
+  const activeClipSourceWidth = activeAsset?.width || sourceWidth
+  const activeClipSourceHeight = activeAsset?.height || sourceHeight
 
   const updateDisplayRect = useCallback(() => {
     const stage = stageRef.current
@@ -337,7 +195,15 @@ export function PreviewPlayer() {
         sourceHeight,
       ),
     )
-  }, [sourceWidth, sourceHeight])
+    setActiveClipDisplayRect(
+      mediaRectInContainer(
+        stage.clientWidth,
+        stage.clientHeight,
+        activeClipSourceWidth,
+        activeClipSourceHeight,
+      ),
+    )
+  }, [sourceWidth, sourceHeight, activeClipSourceWidth, activeClipSourceHeight])
 
   useEffect(() => {
     updateDisplayRect()
@@ -352,7 +218,7 @@ export function PreviewPlayer() {
       observer.disconnect()
       window.removeEventListener('resize', updateDisplayRect)
     }
-  }, [updateDisplayRect, primaryAsset?.id, editorMode])
+  }, [updateDisplayRect, primaryAsset?.id, editorMode, activeAsset?.id])
 
   useEffect(() => {
     if (!activeClip) {
@@ -412,22 +278,54 @@ export function PreviewPlayer() {
           )
         : FULL_FRAME_RECT
 
-  const savedRedBox = activeClip?.effects.find(isRedBoxEffect)
+  const previewMediaLayout = cropRectToPreviewLayout(previewRect)
+
   const activeClipOffset = activeClip
     ? state.ui.playhead - activeClip.timelineStart
     : 0
-  const savedRedBoxVisible =
-    savedRedBox &&
-    activeClipOffset >= (savedRedBox.startOffset ?? 0) &&
-    activeClipOffset <=
-      (savedRedBox.endOffset ??
-        activeClip!.sourceEnd - activeClip!.sourceStart)
-  const visibleRedBox =
-    editorMode === 'red-box' && selectedClip && !state.ui.isPlaying
-      ? redBoxDraft
-      : savedRedBoxVisible
-        ? savedRedBox.rect
-        : undefined
+  const previewClip =
+    editorMode === 'red-box' && selectedClip ? selectedClip : activeClip
+  const previewClipOffset = previewClip
+    ? editorMode === 'red-box'
+      ? state.ui.playhead - previewClip.timelineStart
+      : activeClipOffset
+    : 0
+  const visibleSavedRedBoxes =
+    previewClip?.effects.filter(isRedBoxEffect).filter((effect) =>
+      redBoxVisibleAtOffset(effect, previewClipOffset),
+    ) ?? []
+  const editingRedBox = Boolean(
+    editorMode === 'red-box' && selectedClip && !state.ui.isPlaying,
+  )
+  const otherVisibleRedBoxes = editingRedBox
+    ? visibleSavedRedBoxes.filter(
+        (effect) => effect.id !== state.ui.selectedRedBoxEffectId,
+      )
+    : visibleSavedRedBoxes
+  const selectedRedBoxCount =
+    selectedClip?.effects.filter(isRedBoxEffect).length ?? 0
+
+  const renderStaticRedBox = (rect: FrameRect, key: string) => {
+    const pixel = rectToPixel(
+      rect,
+      displayRect,
+      undefined,
+      sourceWidth,
+      sourceHeight,
+    )
+    return (
+      <div
+        key={key}
+        className="red-box-overlay"
+        style={{
+          left: pixel.x,
+          top: pixel.y,
+          width: pixel.width,
+          height: pixel.height,
+        }}
+      />
+    )
+  }
 
   const aspect =
     primaryAsset && primaryAsset.width > 0 && primaryAsset.height > 0
@@ -437,7 +335,7 @@ export function PreviewPlayer() {
   const stageStyle = {
     aspectRatio: `${primaryAsset?.width ?? 16} / ${primaryAsset?.height ?? 9}`,
     ['--preview-aspect' as string]: String(aspect),
-  } as React.CSSProperties
+  } as CSSProperties
 
   const saveCamera = () => {
     if (!selectedClip) {
@@ -514,10 +412,7 @@ export function PreviewPlayer() {
                   className="preview-video preview-image"
                   alt=""
                   style={{
-                    transform: applyCameraPreview
-                      ? cropRectToVideoTransform(previewRect)
-                      : undefined,
-                    transformOrigin: '0 0',
+                    ...previewMediaLayout,
                   }}
                   onLoad={(event) => {
                     const img = event.currentTarget
@@ -537,11 +432,10 @@ export function PreviewPlayer() {
                 />
               ) : (
                 <video
-                  ref={videoRef}
+                  ref={setVideoNode}
                   className="preview-video"
                   style={{
-                    transform: cropRectToVideoTransform(previewRect),
-                    transformOrigin: '0 0',
+                    ...previewMediaLayout,
                   }}
                   playsInline
                   muted={videoMuted}
@@ -562,51 +456,28 @@ export function PreviewPlayer() {
                     sourceHeight={sourceHeight}
                   />
                 )}
-              {visibleRedBox && displayRect.width > 0 &&
-                (editorMode === 'red-box' && selectedClip && !state.ui.isPlaying ? (
-                  <EditableRect
-                    rect={visibleRedBox}
-                    display={displayRect}
-                    className="red-box-overlay red-box-editing"
-                    onChange={setRedBoxDraft}
-                    sourceWidth={sourceWidth}
-                    sourceHeight={sourceHeight}
-                  />
-                ) : (
-                  <div
-                    className="red-box-overlay"
-                    style={{
-                      left: rectToPixel(
-                        visibleRedBox,
-                        displayRect,
-                        undefined,
-                        sourceWidth,
-                        sourceHeight,
-                      ).x,
-                      top: rectToPixel(
-                        visibleRedBox,
-                        displayRect,
-                        undefined,
-                        sourceWidth,
-                        sourceHeight,
-                      ).y,
-                      width: rectToPixel(
-                        visibleRedBox,
-                        displayRect,
-                        undefined,
-                        sourceWidth,
-                        sourceHeight,
-                      ).width,
-                      height: rectToPixel(
-                        visibleRedBox,
-                        displayRect,
-                        undefined,
-                        sourceWidth,
-                        sourceHeight,
-                      ).height,
-                    }}
-                  />
-                ))}
+              {otherVisibleRedBoxes.map((effect) =>
+                renderStaticRedBox(effect.rect, effect.id),
+              )}
+              {editingRedBox && displayRect.width > 0 && (
+                <EditableRect
+                  rect={redBoxDraft}
+                  display={displayRect}
+                  className="red-box-overlay red-box-editing"
+                  onChange={setRedBoxDraft}
+                  sourceWidth={sourceWidth}
+                  sourceHeight={sourceHeight}
+                />
+              )}
+              {activeClip && activeClipDisplayRect.width > 0 && (
+                <ElementsLayer
+                  clip={activeClip}
+                  clipOffset={activeClipOffset}
+                  displayRect={activeClipDisplayRect}
+                  sourceWidth={activeClipSourceWidth}
+                  sourceHeight={activeClipSourceHeight}
+                />
+              )}
             </div>
           ) : (
             <div className="preview-placeholder">
@@ -788,9 +659,27 @@ export function PreviewPlayer() {
               <>
                 <p className="crop-panel-hint">
                   Drag freely for any rectangle. Hold Shift while resizing to snap
-                  to a square, or use Make square.
+                  to a square, or use Make square. Save adds a new box; select an
+                  overlay on the timeline to edit an existing one.
+                  {selectedRedBoxCount > 0
+                    ? ` This clip has ${selectedRedBoxCount} red box${selectedRedBoxCount === 1 ? '' : 'es'}.`
+                    : ''}
                 </p>
                 <div className="crop-panel-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      dispatch({
+                        type: 'SELECT_RED_BOX',
+                        clipId: selectedClip.id,
+                        effectId: null,
+                      })
+                      setRedBoxDraft(DEFAULT_RED_BOX_DRAFT)
+                    }}
+                  >
+                    New box
+                  </button>
                   <button
                     type="button"
                     className="btn"
@@ -810,30 +699,55 @@ export function PreviewPlayer() {
                   <button
                     type="button"
                     className="btn btn-primary"
-                    onClick={() =>
-                      dispatch({
-                        type: 'SET_CLIP_RED_BOX',
-                        clipId: selectedClip.id,
-                        rect: redBoxDraft,
-                        timelinePlayhead: state.ui.playhead,
-                      })
-                    }
+                    onClick={() => {
+                      recordUndoSnapshot()
+                      if (state.ui.selectedRedBoxEffectId) {
+                        dispatch({
+                          type: 'UPDATE_CLIP_RED_BOX',
+                          clipId: selectedClip.id,
+                          effectId: state.ui.selectedRedBoxEffectId,
+                          rect: redBoxDraft,
+                        })
+                        setSaveNotice('Updated red box.')
+                      } else {
+                        dispatch({
+                          type: 'ADD_CLIP_RED_BOX',
+                          clipId: selectedClip.id,
+                          rect: redBoxDraft,
+                          timelinePlayhead: state.ui.playhead,
+                        })
+                        setSaveNotice('Saved red box to timeline.')
+                      }
+                    }}
                   >
-                    Save red box
+                    {state.ui.selectedRedBoxEffectId ? 'Update red box' : 'Save red box'}
                   </button>
                   <button
                     type="button"
                     className="btn btn-danger"
-                    onClick={() =>
+                    disabled={!state.ui.selectedRedBoxEffectId}
+                    onClick={() => {
+                      if (!state.ui.selectedRedBoxEffectId) {
+                        return
+                      }
+                      recordUndoSnapshot()
                       dispatch({
                         type: 'REMOVE_CLIP_RED_BOX',
                         clipId: selectedClip.id,
+                        effectId: state.ui.selectedRedBoxEffectId,
                       })
-                    }
+                      dispatch({
+                        type: 'SELECT_RED_BOX',
+                        clipId: selectedClip.id,
+                        effectId: null,
+                      })
+                      setRedBoxDraft(DEFAULT_RED_BOX_DRAFT)
+                    }}
                   >
                     Remove
                   </button>
                 </div>
+                {saveNotice && <p className="crop-panel-hint">{saveNotice}</p>}
               </>
             )}
           </aside>

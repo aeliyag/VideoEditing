@@ -4,7 +4,7 @@ import {
 } from '../camera/frames'
 import { clipDuration, totalDuration } from '../timeline/helpers'
 import type { MediaAsset, MediaStore, ProjectDocument, TimelineClip } from '../types/project'
-import { isRedBoxEffect } from '../types/project'
+import { isElementEffect, isRedBoxEffect } from '../types/project'
 
 export type ExportMediaKind = 'audio' | 'video' | 'image'
 
@@ -330,7 +330,7 @@ function buildCameraFilter(
 }
 
 function buildVideoTrimFilter(
-  inputIndex: number,
+  videoInputLabel: string,
   clip: TimelineClip,
   trimLabel: string,
   kind: ExportMediaKind,
@@ -340,14 +340,14 @@ function buildVideoTrimFilter(
   if (kind === 'image') {
     const duration = Math.max(clipDuration(clip), 0.04)
     return (
-      `[${inputIndex}:v]loop=loop=-1:size=1:start=0,` +
+      `[${videoInputLabel}]loop=loop=-1:size=1:start=0,` +
       `trim=duration=${duration},setpts=PTS-STARTPTS,fps=${fpsLabel},format=yuv420p[${trimLabel}]`
     )
   }
 
   const start = clip.sourceStart
   const end = clip.sourceEnd
-  return `[${inputIndex}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,fps=${fpsLabel},format=yuv420p[${trimLabel}]`
+  return `[${videoInputLabel}]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,fps=${fpsLabel},format=yuv420p[${trimLabel}]`
 }
 
 export function clipUsesSourceAudio(
@@ -355,25 +355,43 @@ export function clipUsesSourceAudio(
   asset: MediaAsset,
   kind: ExportMediaKind,
   audioStreamBySource: ReadonlyMap<string, boolean>,
+  inputIndex?: number,
+  audioStreamByInputIndex?: ReadonlyMap<number, boolean>,
 ): boolean {
-  if (kind === 'image' || clip.muteVideoAudio) {
+  if (kind !== 'video' || clip.muteVideoAudio) {
     return false
   }
-  if (!asset.hasAudio) {
-    return false
+  if (
+    inputIndex != null &&
+    audioStreamByInputIndex != null &&
+    audioStreamByInputIndex.has(inputIndex)
+  ) {
+    return audioStreamByInputIndex.get(inputIndex) === true
   }
   return audioStreamBySource.get(clip.sourceId) === true
+}
+
+export function resolveExportMediaKind(
+  sourceId: string,
+  asset: MediaAsset,
+  mediaKindBySource: ReadonlyMap<string, ExportMediaKind>,
+): ExportMediaKind {
+  return mediaKindBySource.get(sourceId) ?? classifyExportAsset(asset)
 }
 
 export interface BuildExportGraphArgs {
   doc: ProjectDocument
   clips: TimelineClip[]
   ttsClips: TimelineClip[]
-  inputIndexBySource: ReadonlyMap<string, number>
+  inputIndexByVideoClipId: ReadonlyMap<string, number>
+  inputIndexByTtsClipId: ReadonlyMap<string, number>
   mediaStore: MediaStore
   mediaKindBySource: ReadonlyMap<string, ExportMediaKind>
   audioStreamBySource: ReadonlyMap<string, boolean>
+  /** When set, only these input indices may use `[N:a]` (one ffmpeg `-i` each). */
+  audioStreamByInputIndex?: ReadonlyMap<number, boolean>
   fpsBySource: ReadonlyMap<string, number>
+  inputIndexByElementId?: ReadonlyMap<string, number>
 }
 
 export interface ExportGraphResult {
@@ -388,11 +406,14 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
     doc,
     clips,
     ttsClips,
-    inputIndexBySource,
+    inputIndexByVideoClipId,
+    inputIndexByTtsClipId,
     mediaStore,
     mediaKindBySource,
     audioStreamBySource,
+    audioStreamByInputIndex,
     fpsBySource,
+    inputIndexByElementId = new Map(),
   } = args
 
   const exportLength = totalDuration(doc)
@@ -403,20 +424,29 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
 
   const clipUsesSource = clips.map((clip) => {
     const asset = mediaStore.get(clip.sourceId)!
-    const kind = mediaKindBySource.get(clip.sourceId) ?? 'video'
-    return clipUsesSourceAudio(clip, asset, kind, audioStreamBySource)
+    const inputIndex = inputIndexByVideoClipId.get(clip.id)!
+    const kind = resolveExportMediaKind(clip.sourceId, asset, mediaKindBySource)
+    return clipUsesSourceAudio(
+      clip,
+      asset,
+      kind,
+      audioStreamBySource,
+      inputIndex,
+      audioStreamByInputIndex,
+    )
   })
 
   const concatWithAudio = ttsClips.length > 0 || clipUsesSource.some(Boolean)
 
   clips.forEach((clip, index) => {
-    const inputIndex = inputIndexBySource.get(clip.sourceId)!
+    const inputIndex = inputIndexByVideoClipId.get(clip.id)!
     const asset = mediaStore.get(clip.sourceId)!
-    const kind = mediaKindBySource.get(clip.sourceId) ?? classifyExportAsset(asset)
+    const kind = resolveExportMediaKind(clip.sourceId, asset, mediaKindBySource)
     const clipFps = resolveClipExportFps(clip.sourceId, kind, asset, fpsBySource)
     const trimLabel = `vt${index}`
+    const videoInputLabel = `${inputIndex}:v`
 
-    filterParts.push(buildVideoTrimFilter(inputIndex, clip, trimLabel, kind, clipFps))
+    filterParts.push(buildVideoTrimFilter(videoInputLabel, clip, trimLabel, kind, clipFps))
 
     const camera = getCameraEffect(clip)
     let vOut = trimLabel
@@ -428,9 +458,9 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
       vOut = vLabel
     }
 
-    const redBox = clip.effects.find(isRedBoxEffect)
-    if (redBox) {
-      const annotationLabel = `va${index}`
+    const redBoxes = clip.effects.filter(isRedBoxEffect)
+    redBoxes.forEach((redBox, boxIndex) => {
+      const annotationLabel = `va${index}_${boxIndex}`
       const x = Math.round(redBox.rect.x * asset.width)
       const y = Math.round(redBox.rect.y * asset.height)
       const width = clampBoxDimension(redBox.rect.width * asset.width)
@@ -443,7 +473,29 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
           `enable='between(t,${annotationStart},${annotationEnd})'[${annotationLabel}]`,
       )
       vOut = annotationLabel
-    }
+    })
+
+    const elements = clip.effects.filter(isElementEffect).sort((a, b) => a.z - b.z)
+    elements.forEach((element, elIndex) => {
+      const elInput = inputIndexByElementId.get(element.id)
+      if (elInput == null) {
+        return
+      }
+      const scaledLabel = `els${index}_${elIndex}`
+      const outLabel = `el${index}_${elIndex}`
+      const w = clampBoxDimension(element.rect.width * asset.width)
+      const h = clampBoxDimension(element.rect.height * asset.height)
+      const x = Math.round(element.rect.x * asset.width)
+      const y = Math.round(element.rect.y * asset.height)
+      const start = element.startOffset ?? 0
+      const end = element.endOffset ?? clipDuration(clip)
+      filterParts.push(`[${elInput}:v]scale=${w}:${h},format=rgba[${scaledLabel}]`)
+      filterParts.push(
+        `[${vOut}][${scaledLabel}]overlay=x=${x}:y=${y}:` +
+          `enable='between(t,${start},${end})':format=auto[${outLabel}]`,
+      )
+      vOut = outLabel
+    })
 
     const normalizedLabel = `vn${index}`
     filterParts.push(buildVideoNormalizeFilter(vOut, normalizedLabel, exportCanvas))
@@ -487,7 +539,7 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
     }
 
     ttsClips.forEach((clip, index) => {
-      const inputIndex = inputIndexBySource.get(clip.sourceId)!
+      const inputIndex = inputIndexByTtsClipId.get(clip.id)!
       const delayMs = Math.max(0, Math.round(clip.timelineStart * 1000))
       const label = `tts${index}`
       filterParts.push(
@@ -513,11 +565,27 @@ export function buildExportGraph(args: BuildExportGraphArgs): ExportGraphResult 
   }
 }
 
+function shortenFfmpegLogLine(line: string, maxLength = 160): string {
+  const trimmed = line.trim()
+  if (trimmed.length <= maxLength) {
+    return trimmed
+  }
+  const filtergraphIdx = trimmed.indexOf('filtergraph description')
+  if (filtergraphIdx >= 0) {
+    const prefix = trimmed.slice(0, filtergraphIdx + 'filtergraph description'.length)
+    return `${prefix} … (filter graph truncated)`
+  }
+  return `${trimmed.slice(0, maxLength - 1)}…`
+}
+
 export function formatFfmpegError(exitCode: number, logs: string[]): string {
   const meaningful = logs.filter((line) =>
     /error|invalid|no such|matches no streams|failed|cannot find/i.test(line),
   )
-  const tail = (meaningful.length > 0 ? meaningful : logs).slice(-8).join(' | ')
+  const tail = (meaningful.length > 0 ? meaningful : logs)
+    .slice(-4)
+    .map((line) => shortenFfmpegLogLine(line))
+    .join(' | ')
   if (tail) {
     return `FFmpeg could not render this project (exit code ${exitCode}): ${tail}`
   }
@@ -525,5 +593,5 @@ export function formatFfmpegError(exitCode: number, logs: string[]): string {
 }
 
 export function parseAudioStreamFromLogs(logs: readonly string[]): boolean {
-  return logs.some((line) => /\bAudio:/i.test(line))
+  return logs.some((line) => /Stream\s+#\d+:\d+.*\bAudio:/i.test(line))
 }

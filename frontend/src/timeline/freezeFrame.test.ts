@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { MediaAsset, ProjectDocument, TimelineClip } from '../types/project'
-import { MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
+import { isElementEffect, MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   clipDuration,
   clipTimelineEnd,
@@ -203,6 +203,43 @@ describe('insertFreezeFrameAtPlayhead', () => {
     expect(material?.kind).toBe('image')
     expect(material?.origin).toBe('freeze-frame')
   })
+
+  it('carries visible elements onto the freeze clip with re-based offsets', () => {
+    let doc = docWithClip({ sourceEnd: 10 })
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[0] = {
+      ...track.clips[0]!,
+      effects: [
+        {
+          type: 'element',
+          id: 'el-1',
+          kind: 'text',
+          rect: { x: 0.1, y: 0.1, width: 0.3, height: 0.15 },
+          z: 0,
+          startOffset: 1,
+          endOffset: 6,
+          opacity: 1,
+          text: 'Label',
+          fontScale: 0.05,
+          fontFamily: 'sans-serif',
+          fontWeight: 600,
+          color: '#fff',
+          align: 'center',
+          backgroundColor: null,
+        },
+      ],
+    }
+
+    const result = insertFreezeFrameAtPlayhead(doc, 3, FPS, 'freeze-asset', 2, 'frame.png')
+    const freeze = result!.document.tracks
+      .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      .clips.find((clip) => clip.sourceId === 'freeze-asset')
+    const element = freeze?.effects.find(isElementEffect)
+    expect(element?.startOffset).toBe(0)
+    expect(element?.endOffset).toBe(2)
+    expect(element?.kind === 'text' && element.text).toBe('Label')
+    expect(element?.id).not.toBe('el-1')
+  })
 })
 
 describe('FREEZE_FRAME_AT_PLAYHEAD reducer', () => {
@@ -219,6 +256,7 @@ describe('FREEZE_FRAME_AT_PLAYHEAD reducer', () => {
     state = projectReducer(state, { type: 'SET_PLAYHEAD', time: 3 })
     state = projectReducer(state, {
       type: 'FREEZE_FRAME_AT_PLAYHEAD',
+      playhead: 3,
       assetId: mockImageAsset().id,
       materialName: 'freeze.png',
       fps: FPS,
@@ -227,6 +265,30 @@ describe('FREEZE_FRAME_AT_PLAYHEAD reducer', () => {
     const track = state.document.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
     const freeze = track.clips.find((c) => c.sourceId === mockImageAsset().id)
     expect(selected).toBe(freeze?.id)
+  })
+
+  it('inserts at the playhead passed in the action, not the current UI playhead', () => {
+    let state = createInitialState()
+    state = projectReducer(state, {
+      type: 'ADD_MATERIAL',
+      asset: mockAsset(),
+      name: 'clip.mp4',
+      kind: 'video',
+      origin: 'upload',
+      addToTimelineAtPlayhead: 0,
+    })
+    state = projectReducer(state, { type: 'SET_PLAYHEAD', time: 8 })
+    state = projectReducer(state, {
+      type: 'FREEZE_FRAME_AT_PLAYHEAD',
+      playhead: 3,
+      assetId: mockImageAsset().id,
+      materialName: 'freeze.png',
+      fps: FPS,
+    })
+    const track = state.document.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    const freeze = track.clips.find((c) => c.sourceId === mockImageAsset().id)
+    expect(freeze?.timelineStart).toBeCloseTo(3, 2)
+    expect(state.ui.playhead).toBeCloseTo(3, 2)
   })
 })
 

@@ -9,7 +9,9 @@ import {
   parseVideoFpsFromLogs,
   stageFileNameForAsset,
 } from './buildExportGraph'
-import type { ProjectDocument, MediaStore } from '../types/project'
+import { collectAllElements } from '../elements/elementOps'
+import { rasterizeElement } from '../elements/rasterizeElement'
+import type { ProjectDocument, MediaStore, TimelineClip } from '../types/project'
 import { getVideoTrack, getAudioTrack, sortedClips } from '../timeline/helpers'
 
 const CORE_VERSION = '0.12.6'
@@ -42,22 +44,6 @@ async function getFfmpeg(onLog?: (message: string) => void): Promise<FFmpeg> {
   return loadPromise
 }
 
-function uniqueAudioSourceIds(doc: ProjectDocument): string[] {
-  const track = getAudioTrack(doc)
-  if (!track) {
-    return []
-  }
-  return [...new Set(sortedClips(track).map((c) => c.sourceId))]
-}
-
-function uniqueVideoSourceIds(doc: ProjectDocument): string[] {
-  const track = getVideoTrack(doc)
-  if (!track) {
-    return []
-  }
-  return [...new Set(sortedClips(track).map((c) => c.sourceId))]
-}
-
 async function probeStagedVideoStream(
   ffmpeg: FFmpeg,
   filename: string,
@@ -71,10 +57,70 @@ async function probeStagedVideoStream(
     await ffmpeg.exec(['-i', filename, '-f', 'null', '-'])
   } catch {
     // FFmpeg returns non-zero for probe-only runs; logs still contain stream info.
+  } finally {
+    ffmpeg.off('log', onLog)
   }
   return {
     hasAudio: parseAudioStreamFromLogs(logs),
     fps: parseVideoFpsFromLogs(logs),
+  }
+}
+
+function buildAudioStreamByInputIndex(
+  clips: TimelineClip[],
+  ttsClips: TimelineClip[],
+  inputIndexByVideoClipId: ReadonlyMap<string, number>,
+  inputIndexByTtsClipId: ReadonlyMap<string, number>,
+  mediaKindBySource: ReadonlyMap<string, ReturnType<typeof classifyExportAsset>>,
+  audioStreamBySource: ReadonlyMap<string, boolean>,
+): Map<number, boolean> {
+  const audioStreamByInputIndex = new Map<number, boolean>()
+  for (const clip of clips) {
+    const inputIndex = inputIndexByVideoClipId.get(clip.id)!
+    const kind = mediaKindBySource.get(clip.sourceId) ?? 'video'
+    audioStreamByInputIndex.set(
+      inputIndex,
+      kind === 'video' && audioStreamBySource.get(clip.sourceId) === true,
+    )
+  }
+  for (const clip of ttsClips) {
+    audioStreamByInputIndex.set(inputIndexByTtsClipId.get(clip.id)!, true)
+  }
+  return audioStreamByInputIndex
+}
+
+function uniqueSourceIds(clips: TimelineClip[], ttsClips: TimelineClip[]): string[] {
+  return [...new Set([...clips.map((c) => c.sourceId), ...ttsClips.map((c) => c.sourceId)])]
+}
+
+function assignInputIndices(
+  clips: TimelineClip[],
+  ttsClips: TimelineClip[],
+  elementIds: string[],
+): {
+  inputIndexByVideoClipId: Map<string, number>
+  inputIndexByTtsClipId: Map<string, number>
+  inputIndexByElementId: Map<string, number>
+  inputCount: number
+} {
+  const inputIndexByVideoClipId = new Map<string, number>()
+  const inputIndexByTtsClipId = new Map<string, number>()
+  const inputIndexByElementId = new Map<string, number>()
+  let nextIndex = 0
+  for (const clip of clips) {
+    inputIndexByVideoClipId.set(clip.id, nextIndex++)
+  }
+  for (const clip of ttsClips) {
+    inputIndexByTtsClipId.set(clip.id, nextIndex++)
+  }
+  for (const elementId of elementIds) {
+    inputIndexByElementId.set(elementId, nextIndex++)
+  }
+  return {
+    inputIndexByVideoClipId,
+    inputIndexByTtsClipId,
+    inputIndexByElementId,
+    inputCount: nextIndex,
   }
 }
 
@@ -94,14 +140,26 @@ export async function exportProjectToMp4(
   const ffmpeg = await getFfmpeg((msg) => onProgress?.(0.1, msg))
 
   const clips = sortedClips(track)
-  const videoSourceIds = uniqueVideoSourceIds(doc)
-  const audioSourceIds = uniqueAudioSourceIds(doc)
-  const allSourceIds = [...videoSourceIds, ...audioSourceIds]
-  const inputIndexBySource = new Map<string, number>()
+  const audioTrack = getAudioTrack(doc)
+  const ttsClips = audioTrack ? sortedClips(audioTrack) : []
+  const allElements = collectAllElements(doc)
+  if (allElements.length > 30) {
+    onProgress?.(
+      0.08,
+      `Warning: ${allElements.length} overlay elements may slow export or exceed memory limits.`,
+    )
+  }
+
+  const elementIds = allElements.map((element) => element.id)
+  const { inputIndexByVideoClipId, inputIndexByTtsClipId, inputIndexByElementId, inputCount } =
+    assignInputIndices(clips, ttsClips, elementIds)
+
+  const stagedElementNameById = new Map<string, string>()
+
   const mediaKindBySource = new Map<string, ReturnType<typeof classifyExportAsset>>()
   const audioStreamBySource = new Map<string, boolean>()
   const fpsBySource = new Map<string, number>()
-  const stagedNames: string[] = []
+  const stagedNameBySourceId = new Map<string, string>()
   const outputName = 'output.mp4'
 
   try {
@@ -110,8 +168,9 @@ export async function exportProjectToMp4(
     // The first export has no previous output.
   }
 
-  for (let i = 0; i < allSourceIds.length; i++) {
-    const sourceId = allSourceIds[i]!
+  const sourceIds = uniqueSourceIds(clips, ttsClips)
+  for (let i = 0; i < sourceIds.length; i++) {
+    const sourceId = sourceIds[i]!
     const asset = mediaStore.get(sourceId)
     if (!asset) {
       throw new Error('Missing media for export.')
@@ -119,8 +178,7 @@ export async function exportProjectToMp4(
     const kind = classifyExportAsset(asset)
     const name = stageFileNameForAsset(i, asset)
     await ffmpeg.writeFile(name, await fetchFile(asset.file))
-    stagedNames.push(name)
-    inputIndexBySource.set(sourceId, i)
+    stagedNameBySourceId.set(sourceId, name)
     mediaKindBySource.set(sourceId, kind)
 
     if (kind === 'video') {
@@ -135,25 +193,87 @@ export async function exportProjectToMp4(
       audioStreamBySource.set(sourceId, false)
     }
 
-    onProgress?.(0.1 + (0.2 * (i + 1)) / allSourceIds.length, `Staged ${asset.file.name}`)
+    onProgress?.(0.1 + (0.2 * (i + 1)) / sourceIds.length, `Staged ${asset.file.name}`)
   }
 
-  const audioTrack = getAudioTrack(doc)
-  const ttsClips = audioTrack ? sortedClips(audioTrack) : []
+  for (let i = 0; i < allElements.length; i++) {
+    const element = allElements[i]!
+    const ownerClip = clips.find((clip) =>
+      clip.effects.some((effect) => effect.type === 'element' && effect.id === element.id),
+    )
+    const asset = ownerClip ? mediaStore.get(ownerClip.sourceId) : undefined
+    if (!asset) {
+      throw new Error('Missing clip media for element export.')
+    }
+    const pngBlob = await rasterizeElement(
+      element,
+      asset.width,
+      asset.height,
+      mediaStore,
+    )
+    const name = `element_${i}.png`
+    await ffmpeg.writeFile(name, await fetchFile(pngBlob))
+    stagedElementNameById.set(element.id, name)
+    onProgress?.(
+      0.3 + (0.05 * (i + 1)) / Math.max(allElements.length, 1),
+      `Staged element ${i + 1}/${allElements.length}`,
+    )
+  }
+
+  const audioStreamByInputIndex = buildAudioStreamByInputIndex(
+    clips,
+    ttsClips,
+    inputIndexByVideoClipId,
+    inputIndexByTtsClipId,
+    mediaKindBySource,
+    audioStreamBySource,
+  )
 
   const graph = buildExportGraph({
     doc,
     clips,
     ttsClips,
-    inputIndexBySource,
+    inputIndexByVideoClipId,
+    inputIndexByTtsClipId,
     mediaStore,
     mediaKindBySource,
     audioStreamBySource,
+    audioStreamByInputIndex,
     fpsBySource,
+    inputIndexByElementId,
   })
 
+  // One ffmpeg input slot per timeline clip. Repeat `-i` for the same staged file
+  // so each clip gets its own [N:v]/[N:a] pads without duplicating bytes in wasm FS.
+  const inputArgs: string[] = []
+  for (const clip of clips) {
+    const stagedName = stagedNameBySourceId.get(clip.sourceId)
+    if (!stagedName) {
+      throw new Error('Missing staged media for export.')
+    }
+    inputArgs.push('-i', stagedName)
+  }
+  for (const clip of ttsClips) {
+    const stagedName = stagedNameBySourceId.get(clip.sourceId)
+    if (!stagedName) {
+      throw new Error('Missing staged media for export.')
+    }
+    inputArgs.push('-i', stagedName)
+  }
+  for (const element of allElements) {
+    const stagedName = stagedElementNameById.get(element.id)
+    if (!stagedName) {
+      throw new Error('Missing staged element PNG for export.')
+    }
+    inputArgs.push('-i', stagedName)
+  }
+
+  if (inputArgs.length / 2 !== inputCount) {
+    throw new Error('Export input wiring mismatch.')
+  }
+
   const args = [
-    ...stagedNames.flatMap((name) => ['-i', name]),
+    ...inputArgs,
     '-filter_complex',
     graph.filterComplex,
     '-map',
@@ -182,19 +302,40 @@ export async function exportProjectToMp4(
   }
 
   onProgress?.(0.98, 'Finalizing…')
-  const data = await ffmpeg.readFile(outputName)
-  if (typeof data === 'string') {
-    throw new Error('Unexpected export output.')
+  let data: Uint8Array | string
+  try {
+    data = await ffmpeg.readFile(outputName)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Export encoding finished but the output file could not be read (${detail}). ` +
+        'Try exporting a shorter timeline or reload the page and retry.',
+    )
+  }
+  if (typeof data === 'string' || data.byteLength === 0) {
+    throw new Error('Export produced an empty file. Try reloading and exporting again.')
   }
   onProgress?.(1, 'Done')
 
-  for (const name of stagedNames) {
+  for (const name of stagedNameBySourceId.values()) {
     try {
       await ffmpeg.deleteFile(name)
     } catch {
       // Cleanup must not invalidate a completed export.
     }
   }
-  await ffmpeg.deleteFile(outputName)
+  for (const name of stagedElementNameById.values()) {
+    try {
+      await ffmpeg.deleteFile(name)
+    } catch {
+      // Ignore cleanup errors.
+    }
+  }
+  try {
+    await ffmpeg.deleteFile(outputName)
+  } catch {
+    // Ignore cleanup errors.
+  }
+
   return new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' })
 }

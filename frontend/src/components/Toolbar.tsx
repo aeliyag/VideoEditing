@@ -42,6 +42,10 @@ export function Toolbar() {
     importFiles,
     canFreezeFrame,
     freezeFrameAtPlayhead,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   } = useProject()
 
   const [libraryOpen, setLibraryOpen] = useState(false)
@@ -135,6 +139,24 @@ export function Toolbar() {
       <div className="toolbar-actions">
         <button type="button" className="btn" onClick={onNew}>
           New
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={!canUndo}
+          onClick={undo}
+          title="Undo (Cmd/Ctrl+Z)"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={!canRedo}
+          onClick={redo}
+          title="Redo (Cmd/Ctrl+Shift+Z)"
+        >
+          Redo
         </button>
         <button type="button" className="btn" onClick={() => setLibraryOpen((v) => !v)}>
           {libraryOpen ? 'Hide library' : 'Open library'}

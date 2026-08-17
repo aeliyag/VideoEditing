@@ -1,6 +1,14 @@
 import type { ProjectDocument, TimelineClip, Track } from '../types/project'
 import { MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
 
+/** Minimum clip duration in seconds — keeps trim handles grabbable at default zoom. */
+export const MIN_CLIP_DURATION = 0.25
+
+export function minClipDuration(fps: number): number {
+  const oneFrame = fps > 0 ? 1 / fps : 1 / 30
+  return Math.max(MIN_CLIP_DURATION, oneFrame)
+}
+
 export function clipDuration(clip: TimelineClip): number {
   return Math.max(0, clip.sourceEnd - clip.sourceStart)
 }

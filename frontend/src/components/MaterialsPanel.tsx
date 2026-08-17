@@ -44,8 +44,9 @@ function MaterialThumb({ material }: { material: MaterialEntry }) {
 }
 
 function MaterialRow({ material }: { material: MaterialEntry }) {
-  const { mediaStore, addMaterialToTimeline, removeMaterial } = useProject()
+  const { mediaStore, addMaterialToTimeline, removeMaterial, beginTtsEdit } = useProject()
   const asset = mediaStore.get(material.id)
+  const canModifyTts = material.origin === 'tts'
 
   return (
     <li className="material-item">
@@ -58,6 +59,11 @@ function MaterialRow({ material }: { material: MaterialEntry }) {
           {material.kind} · {materialLabel(material.origin)}
           {asset ? ` · ${formatDuration(asset.duration)}` : ''}
         </p>
+        {canModifyTts && material.tts?.prompt && (
+          <p className="material-item-prompt" title={material.tts.prompt}>
+            “{material.tts.prompt}”
+          </p>
+        )}
         <div className="material-item-actions">
           {material.kind !== 'audio' && (
             <button
@@ -75,6 +81,15 @@ function MaterialRow({ material }: { material: MaterialEntry }) {
               onClick={() => addMaterialToTimeline(material.id, 'audio')}
             >
               + Audio
+            </button>
+          )}
+          {canModifyTts && (
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => beginTtsEdit(material.id)}
+            >
+              Modify
             </button>
           )}
           <button

@@ -109,6 +109,19 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
+function isAllowedAkoolAssetUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') {
+      return false
+    }
+    const host = parsed.hostname.toLowerCase()
+    return host.endsWith('.cloudfront.net') || host.endsWith('.akool.com')
+  } catch {
+    return false
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -319,6 +332,25 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(200, {
         status: item.status,
         videoUrl: item.video_url,
+      })
+    }
+
+    if (route === 'download' && req.method === 'GET') {
+      const remoteUrl = new URL(req.url).searchParams.get('url')?.trim()
+      if (!remoteUrl || !isAllowedAkoolAssetUrl(remoteUrl)) {
+        return jsonResponse(400, { error: 'Invalid or missing download url' })
+      }
+      const assetRes = await fetch(remoteUrl)
+      if (!assetRes.ok) {
+        return jsonResponse(502, { error: 'Failed to download generated asset' })
+      }
+      const buffer = await assetRes.arrayBuffer()
+      return new Response(buffer, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': assetRes.headers.get('content-type') ?? 'application/octet-stream',
+        },
       })
     }
 

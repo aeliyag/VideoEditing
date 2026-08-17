@@ -26,6 +26,7 @@ export function AkoolRecordingPanel() {
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [reviewFile, setReviewFile] = useState<File | null>(null)
+  const [reviewDurationHint, setReviewDurationHint] = useState<number | undefined>()
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -39,6 +40,7 @@ export function AkoolRecordingPanel() {
     }
     setPreviewUrl(null)
     setReviewFile(null)
+    setReviewDurationHint(undefined)
   }, [previewUrl])
 
   const resetToIdle = useCallback(() => {
@@ -63,7 +65,7 @@ export function AkoolRecordingPanel() {
   }, [previewUrl])
 
   const handleRecordingComplete = useCallback(
-    async (file: File) => {
+    async (file: File, durationHint?: number) => {
       if (timerRef.current !== null) {
         window.clearInterval(timerRef.current)
         timerRef.current = null
@@ -80,7 +82,7 @@ export function AkoolRecordingPanel() {
         setBusy(true)
         setStatus('Adding recording to timeline…')
         try {
-          await importRecordingFile(file, { addToTimeline: true })
+          await importRecordingFile(file, { addToTimeline: true, durationHint })
           setStatus('Recording added to materials and timeline.')
           resetToIdle()
         } catch (err) {
@@ -94,6 +96,7 @@ export function AkoolRecordingPanel() {
 
       const url = URL.createObjectURL(file)
       setReviewFile(file)
+      setReviewDurationHint(durationHint)
       setPreviewUrl(url)
       setPhase('review')
       setStatus('Review your recording, then add it to the timeline or discard.')
@@ -113,8 +116,8 @@ export function AkoolRecordingPanel() {
       onMicUnavailable: () => {
         setStatus('Microphone unavailable — recording tab audio only.')
       },
-      onStop: (file) => {
-        void handleRecordingComplete(file)
+      onStop: (file, meta) => {
+        void handleRecordingComplete(file, meta.durationSeconds)
       },
       onError: (err) => {
         if (timerRef.current !== null) {
@@ -147,7 +150,10 @@ export function AkoolRecordingPanel() {
     setBusy(true)
     setError('')
     try {
-      await importRecordingFile(reviewFile, { addToTimeline: true })
+      await importRecordingFile(reviewFile, {
+        addToTimeline: true,
+        durationHint: reviewDurationHint ?? elapsed,
+      })
       resetToIdle()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add recording.')
@@ -163,7 +169,10 @@ export function AkoolRecordingPanel() {
     setBusy(true)
     setError('')
     try {
-      await importRecordingFile(reviewFile, { addToTimeline: false })
+      await importRecordingFile(reviewFile, {
+        addToTimeline: false,
+        durationHint: reviewDurationHint ?? elapsed,
+      })
       resetToIdle()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add recording.')

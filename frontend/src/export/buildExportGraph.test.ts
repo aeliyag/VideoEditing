@@ -79,8 +79,14 @@ function buildFromDoc(
     }
   }
 
-  const sourceIds = [...new Set([...videoTrack.clips, ...ttsClips].map((c) => c.sourceId))]
-  const inputIndexBySource = new Map(sourceIds.map((id, index) => [id, index]))
+  const videoClips = [...videoTrack.clips].sort((a, b) => a.timelineStart - b.timelineStart)
+  const inputIndexByVideoClipId = new Map(
+    videoClips.map((clip, index) => [clip.id, index]),
+  )
+  const inputIndexByTtsClipId = new Map(
+    ttsClips.map((clip, index) => [clip.id, videoClips.length + index]),
+  )
+  const sourceIds = [...new Set([...videoClips, ...ttsClips].map((c) => c.sourceId))]
   const mediaKindBySource = new Map(
     sourceIds.map((id) => [id, classifyExportAsset(mediaStore.get(id)!)]),
   )
@@ -93,9 +99,10 @@ function buildFromDoc(
 
   return buildExportGraph({
     doc,
-    clips: [...videoTrack.clips].sort((a, b) => a.timelineStart - b.timelineStart),
+    clips: videoClips,
     ttsClips,
-    inputIndexBySource,
+    inputIndexByVideoClipId,
+    inputIndexByTtsClipId,
     mediaStore,
     mediaKindBySource,
     audioStreamBySource,
@@ -313,12 +320,159 @@ describe('buildExportGraph', () => {
     expect(graph.filterComplex).toContain('setpts=PTS-STARTPTS,fps=23.976,format=yuv420p')
     expect(graph.filterComplex).toContain('format=yuv420p,fps=30')
   })
+
+  it('assigns a dedicated ffmpeg input per timeline clip when the same source is reused', () => {
+    const asset = mockAsset({ id: 'video-1' })
+    let doc = createEmptyProject()
+    doc = addVideoClipFromMaterial(doc, asset, 0)
+    doc = addVideoClipFromMaterial(doc, asset, 5)
+    doc = addVideoClipFromMaterial(doc, asset, 12)
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[1] = { ...track.clips[1], sourceStart: 5, sourceEnd: 8 }
+    track.clips[2] = { ...track.clips[2], sourceStart: 8, sourceEnd: 10 }
+
+    const ttsAsset = mockAsset({
+      id: 'tts-1',
+      file: new File([], 'tts.mp3', { type: 'audio/mpeg' }),
+      fps: 0,
+      width: 0,
+      height: 0,
+      duration: 20,
+      hasAudio: true,
+    })
+    doc = addAudioClipFromSource(doc, ttsAsset, 0)
+
+    const graph = buildFromDoc(doc, {
+      audioStreamBySource: { 'video-1': true, 'tts-1': true },
+      extraAssets: [asset, ttsAsset],
+    })
+
+    expect(graph.filterComplex).toContain('[0:v]trim=')
+    expect(graph.filterComplex).toContain('[1:v]trim=')
+    expect(graph.filterComplex).toContain('[2:v]trim=')
+    expect(graph.filterComplex).toContain('[0:a]atrim=')
+    expect(graph.filterComplex).toContain('[1:a]atrim=')
+    expect(graph.filterComplex).toContain('[2:a]atrim=')
+    expect(graph.filterComplex).not.toMatch(/\[0:a\]atrim.*\[0:a\]atrim/)
+    expect(graph.filterComplex).not.toContain('asplit=')
+    expect(graph.filterComplex).not.toContain('split=')
+    expect(graph.filterComplex).toContain('amix=inputs=2')
+  })
+
+  it('chains drawbox filters for multiple red boxes on one clip', () => {
+    const doc = docWithClip({
+      effects: [
+        {
+          type: 'red-box',
+          id: 'rb1',
+          rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+          strokeWidth: 4,
+          startOffset: 0,
+          endOffset: 5,
+        },
+        {
+          type: 'red-box',
+          id: 'rb2',
+          rect: { x: 0.5, y: 0.5, width: 0.2, height: 0.2 },
+          strokeWidth: 4,
+          startOffset: 2,
+          endOffset: 8,
+        },
+      ],
+    })
+    const graph = buildFromDoc(doc, { audioStreamBySource: { 'source-1': false } })
+
+    expect(graph.filterComplex).toContain('[vt0]drawbox=')
+    expect(graph.filterComplex).toContain('[va0_0]drawbox=')
+    expect(graph.filterComplex).toContain('[va0_1]')
+  })
+
+  it('does not use :a on freeze-frame ffmpeg inputs when video has audio', () => {
+    const videoAsset = mockAsset({ id: 'video-1', duration: 10 })
+    const freezeAsset = mockAsset({
+      id: 'freeze-1',
+      file: new File([], 'clip_freeze_1000ms.png', { type: 'image/png' }),
+      duration: 2,
+      hasAudio: false,
+    })
+
+    let doc = createEmptyProject()
+    doc = addVideoClipFromMaterial(doc, videoAsset, 0)
+    doc = addVideoClipFromMaterial(doc, freezeAsset, 4)
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[1] = { ...track.clips[1], sourceStart: 0, sourceEnd: 2 }
+
+    const graph = buildFromDoc(doc, {
+      audioStreamBySource: { 'video-1': true, 'freeze-1': false },
+      extraAssets: [videoAsset, freezeAsset],
+    })
+
+    expect(graph.filterComplex).toContain('[0:a]atrim')
+    expect(graph.filterComplex).not.toContain('[1:a]')
+    expect(graph.filterComplex).toContain('anullsrc=r=44100:cl=stereo')
+    expect(graph.filterComplex).toContain('concat=n=2:v=1:a=1')
+  })
+
+  it('respects audioStreamByInputIndex over stale per-source audio flags', () => {
+    const videoAsset = mockAsset({ id: 'video-1', duration: 10 })
+    const freezeAsset = mockAsset({
+      id: 'freeze-1',
+      file: new File([], 'clip_freeze_1000ms.png', { type: 'image/png' }),
+      duration: 2,
+      hasAudio: false,
+    })
+
+    let doc = createEmptyProject()
+    doc = addVideoClipFromMaterial(doc, videoAsset, 0)
+    doc = addVideoClipFromMaterial(doc, freezeAsset, 4)
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[1] = { ...track.clips[1], sourceStart: 0, sourceEnd: 2 }
+
+    const videoClips = [...track.clips].sort((a, b) => a.timelineStart - b.timelineStart)
+    const mediaStore = new Map([
+      ['video-1', videoAsset],
+      ['freeze-1', freezeAsset],
+    ])
+    const inputIndexByVideoClipId = new Map(
+      videoClips.map((clip, index) => [clip.id, index]),
+    )
+
+    const graph = buildExportGraph({
+      doc,
+      clips: videoClips,
+      ttsClips: [],
+      inputIndexByVideoClipId,
+      inputIndexByTtsClipId: new Map(),
+      mediaStore,
+      mediaKindBySource: new Map([
+        ['video-1', 'video'],
+        ['freeze-1', 'image'],
+      ]),
+      audioStreamBySource: new Map([
+        ['video-1', true],
+        ['freeze-1', true],
+      ]),
+      audioStreamByInputIndex: new Map([
+        [0, true],
+        [1, false],
+      ]),
+      fpsBySource: new Map(),
+    })
+
+    expect(graph.filterComplex).toContain('[0:a]atrim')
+    expect(graph.filterComplex).not.toContain('[1:a]')
+  })
 })
 
 describe('export helpers', () => {
   it('detects audio streams from ffmpeg probe logs', () => {
     expect(parseAudioStreamFromLogs(['Input #0, mov,mp4', '  Stream #0:1: Audio: aac'])).toBe(true)
     expect(parseAudioStreamFromLogs(['Input #0, png', '  Stream #0:0: Video: png'])).toBe(false)
+    expect(
+      parseAudioStreamFromLogs([
+        "Stream specifier ':a' in filtergraph description matches no streams.",
+      ]),
+    ).toBe(false)
   })
 
   it('detects video fps from ffmpeg probe logs', () => {
@@ -344,6 +498,15 @@ describe('export helpers', () => {
     expect(message).toContain('Stream map matches no streams')
   })
 
+  it('truncates long filtergraph errors', () => {
+    const longFilter = `[0:v]trim=start=0:end=10,${'x'.repeat(500)}`
+    const message = formatFfmpegError(1, [
+      `Stream specifier ':a' in filtergraph description ${longFilter} matches no streams.`,
+    ])
+    expect(message.length).toBeLessThan(400)
+    expect(message).toContain('filter graph truncated')
+  })
+
   it('classifies image assets for export', () => {
     const asset = mockAsset({
       file: new File([], 'frame.png', { type: 'image/png' }),
@@ -356,6 +519,24 @@ describe('export helpers', () => {
       'image',
       new Map([[asset.id, false]]),
     )).toBe(false)
+  })
+
+  it('uses ffmpeg probe for clip audio, not the browser hasAudio flag', () => {
+    const asset = mockAsset({ hasAudio: true })
+    const clip = {
+      id: 'c',
+      sourceId: asset.id,
+      sourceStart: 0,
+      sourceEnd: 5,
+      timelineStart: 0,
+      effects: [],
+    }
+    expect(
+      clipUsesSourceAudio(clip, asset, 'video', new Map([[asset.id, false]])),
+    ).toBe(false)
+    expect(
+      clipUsesSourceAudio(clip, asset, 'video', new Map([[asset.id, true]])),
+    ).toBe(true)
   })
 
   it('clamps box dimensions', () => {

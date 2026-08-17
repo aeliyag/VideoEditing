@@ -6,12 +6,13 @@ import type {
   ProjectDocument,
   TimelineClip,
 } from '../types/project'
-import { isCameraEffect, isRedBoxEffect, MAIN_VIDEO_TRACK_ID } from '../types/project'
+import { isCameraEffect, isElementEffect, isRedBoxEffect, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   clipAtTime,
   clipDuration,
   clipTimelineEnd,
   getVideoTrack,
+  minClipDuration,
   snapToFrame,
   timelineToSourceTime,
 } from './helpers'
@@ -28,10 +29,6 @@ function sortClipsByTimeline(clips: TimelineClip[]): TimelineClip[] {
   return [...clips].sort((a, b) => a.timelineStart - b.timelineStart)
 }
 
-function minClipDuration(fps: number): number {
-  return fps > 0 ? 1 / fps : 1 / 30
-}
-
 function copyEffectsForFreezeClip(
   clip: TimelineClip,
   playhead: number,
@@ -44,6 +41,18 @@ function copyEffectsForFreezeClip(
       continue
     }
     if (isRedBoxEffect(effect)) {
+      if (localOffset < effect.startOffset || localOffset >= effect.endOffset) {
+        continue
+      }
+      next.push({
+        ...effect,
+        id: uuidv4(),
+        startOffset: 0,
+        endOffset: Math.min(effect.endOffset - localOffset, freezeDuration),
+      })
+      continue
+    }
+    if (isElementEffect(effect)) {
       if (localOffset < effect.startOffset || localOffset >= effect.endOffset) {
         continue
       }

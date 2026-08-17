@@ -1,6 +1,6 @@
 import type { MaterialKind, MaterialOrigin } from '../types/project'
 import { importDebug } from '../debug/importDebug'
-import { probeMediaFile } from '../media/probe'
+import { probeMediaFile, type ProbeMediaOptions } from '../media/probe'
 
 export function inferMaterialKind(
   file: File,
@@ -36,12 +36,15 @@ export function materialLabel(origin: MaterialOrigin): string {
   }
 }
 
-export async function probeFileAsMaterial(file: File): Promise<{
+export async function probeFileAsMaterial(
+  file: File,
+  options?: ProbeMediaOptions,
+): Promise<{
   asset: Awaited<ReturnType<typeof probeMediaFile>>
   kind: MaterialKind
 }> {
-  const asset = await probeMediaFile(file)
+  const asset = await probeMediaFile(file, options)
   const kind = inferMaterialKind(file, asset)
-  importDebug('probeFileAsMaterial done', { kind, assetId: asset.id })
+  importDebug('probeFileAsMaterial done', { kind, assetId: asset.id, duration: asset.duration })
   return { asset, kind }
 }

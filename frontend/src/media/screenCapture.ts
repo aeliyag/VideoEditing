@@ -58,10 +58,14 @@ export interface ScreenCaptureSession {
   dispose: () => void
 }
 
+export interface CaptureStopMeta {
+  durationSeconds: number
+}
+
 export interface CaptureAkoolTabOptions {
   includeTabAudio: boolean
   includeMic: boolean
-  onStop: (file: File) => void
+  onStop: (file: File, meta: CaptureStopMeta) => void
   onError: (err: Error) => void
   onMicUnavailable?: () => void
 }
@@ -118,6 +122,7 @@ export async function captureAkoolTab(
     const mimeType = pickRecorderMimeType()
     const chunks: Blob[] = []
     recorder = new MediaRecorder(recordStream, { mimeType })
+    const startedAt = performance.now()
 
     const finishRecording = () => {
       if (recorder && recorder.state !== 'inactive') {
@@ -143,7 +148,8 @@ export async function captureAkoolTab(
       stopAllTracks()
       const blob = new Blob(chunks, { type: mimeType })
       const file = new File([blob], recordingFileName(), { type: mimeType })
-      options.onStop(file)
+      const durationSeconds = Math.max(0, (performance.now() - startedAt) / 1000)
+      options.onStop(file, { durationSeconds })
     }
 
     recorder.onerror = () => {

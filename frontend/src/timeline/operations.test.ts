@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import type { MediaAsset, ProjectDocument, TimelineClip } from '../types/project'
-import { MAIN_VIDEO_TRACK_ID } from '../types/project'
-import { clipDuration, totalDuration } from './helpers'
+import { MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
+import { clipDuration, MIN_CLIP_DURATION, totalDuration } from './helpers'
 import {
+  addAudioClipFromSource,
   addClipFromSource,
   createEmptyProject,
   deleteClip,
   reorderClipByDrag,
+  retargetClipsToNewDuration,
   splitAtPlayhead,
   trimClip,
 } from './operations'
@@ -117,5 +119,122 @@ describe('timeline operations', () => {
     expect(totalDuration(reordered)).toBeCloseTo(6, 1)
     void first
     void second
+  })
+
+  it('extends a freeze-frame still past its original duration and ripples later clips', () => {
+    let doc = createEmptyProject()
+    doc = addClipFromSource(doc, mockAsset({ duration: 6 }))
+    const videoTrack = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    const videoId = videoTrack.clips[0].id
+    videoTrack.clips[0] = {
+      ...videoTrack.clips[0],
+      sourceEnd: 4,
+      timelineStart: 2,
+    }
+    const freeze: TimelineClip = {
+      id: 'freeze-1',
+      sourceId: 'freeze-asset',
+      sourceStart: 0,
+      sourceEnd: 2,
+      timelineStart: 0,
+      effects: [],
+    }
+    videoTrack.clips = [freeze, videoTrack.clips[0]]
+    doc = addAudioClipFromSource(doc, mockAsset({ id: 'audio-1', duration: 3 }), 2)
+    doc = {
+      ...doc,
+      materials: [
+        {
+          id: 'freeze-asset',
+          name: 'freeze.png',
+          kind: 'image',
+          origin: 'freeze-frame',
+          addedAt: 1,
+        },
+      ],
+    }
+
+    const extended = trimClip(doc, freeze.id, 'end', 8, 5, FPS)
+    const afterVideo = extended.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    const afterFreeze = afterVideo.clips.find((c) => c.id === freeze.id)!
+    const afterVideoClip = afterVideo.clips.find((c) => c.id === videoId)!
+    const afterAudio = extended.tracks.find((t) => t.id === MAIN_AUDIO_TRACK_ID)!.clips[0]
+    expect(clipDuration(afterFreeze)).toBeCloseTo(8, 1)
+    expect(afterVideoClip.timelineStart).toBeCloseTo(8, 1)
+    expect(afterAudio.timelineStart).toBeCloseTo(8, 1)
+    expect(totalDuration(extended)).toBeCloseTo(12, 1)
+  })
+
+  it('does not extend a video clip past its current end', () => {
+    const doc = docWithClip({ sourceEnd: 4, timelineStart: 0 })
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0].id
+    const result = trimClip(doc, clipId, 'end', 8, 10, FPS)
+    const clip = result.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]
+    expect(clipDuration(clip)).toBeCloseTo(4, 2)
+  })
+
+  it('still shortens freeze-frame clips from the end', () => {
+    let doc = createEmptyProject()
+    const freeze: TimelineClip = {
+      id: 'freeze-1',
+      sourceId: 'freeze-asset',
+      sourceStart: 0,
+      sourceEnd: 2,
+      timelineStart: 0,
+      effects: [],
+    }
+    doc = {
+      ...doc,
+      materials: [
+        {
+          id: 'freeze-asset',
+          name: 'freeze.png',
+          kind: 'image',
+          origin: 'freeze-frame',
+          addedAt: 1,
+        },
+      ],
+      tracks: doc.tracks.map((t) =>
+        t.id === MAIN_VIDEO_TRACK_ID ? { ...t, clips: [freeze] } : t,
+      ),
+    }
+    const shortened = trimClip(doc, freeze.id, 'end', 0.5, 5, FPS)
+    const clip = shortened.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]
+    expect(clipDuration(clip)).toBeCloseTo(0.5, 1)
+  })
+
+  it('retargets full-length clips when a source duration changes', () => {
+    let doc = createEmptyProject()
+    doc = addAudioClipFromSource(doc, mockAsset({ id: 'tts-1', duration: 4 }), 0)
+    const updated = retargetClipsToNewDuration(doc, 'tts-1', 4, 6)
+    const clip = updated.tracks.find((t) => t.id === MAIN_AUDIO_TRACK_ID)!.clips[0]
+    expect(clip.sourceStart).toBe(0)
+    expect(clip.sourceEnd).toBe(6)
+  })
+
+  it('clamps trimmed clips when the replacement is shorter', () => {
+    let doc = createEmptyProject()
+    doc = addAudioClipFromSource(doc, mockAsset({ id: 'tts-1', duration: 8 }), 0)
+    const track = doc.tracks.find((t) => t.id === MAIN_AUDIO_TRACK_ID)!
+    track.clips[0] = { ...track.clips[0], sourceStart: 1, sourceEnd: 7 }
+    const updated = retargetClipsToNewDuration(doc, 'tts-1', 8, 5)
+    const clip = updated.tracks.find((t) => t.id === MAIN_AUDIO_TRACK_ID)!.clips[0]
+    expect(clip.sourceStart).toBe(1)
+    expect(clip.sourceEnd).toBe(5)
+  })
+
+  it('does not trim video clips below the minimum duration', () => {
+    const doc = docWithClip()
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0].id
+    const trimmed = trimClip(doc, clipId, 'end', 0, 10, FPS)
+    const clip = trimmed.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]
+    expect(clipDuration(clip)).toBeGreaterThanOrEqual(MIN_CLIP_DURATION)
+    expect(clipDuration(clip)).toBeLessThan(MIN_CLIP_DURATION + 1 / FPS + 0.01)
+  })
+
+  it('no-ops split near clip edges within minimum duration', () => {
+    const doc = docWithClip()
+    expect(splitAtPlayhead(doc, 0.1, FPS)).toEqual(doc)
+    expect(splitAtPlayhead(doc, 9.9, FPS)).toEqual(doc)
   })
 })

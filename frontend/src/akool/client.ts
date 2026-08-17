@@ -45,6 +45,24 @@ async function parseError(response: Response, fallback: string): Promise<never> 
   throw new Error(body.error ?? `${fallback} (${response.status})`)
 }
 
+export async function downloadAkoolRemoteFile(
+  url: string,
+  fileName: string,
+  mimeType: string,
+): Promise<File> {
+  const response = await fetch(
+    `${AKOOL_API_BASE}/download?url=${encodeURIComponent(url)}`,
+    { headers: await authHeaders() },
+  )
+  if (!response.ok) {
+    await parseError(response, 'Download failed')
+  }
+  const blob = await response.blob()
+  return new File([blob], fileName, {
+    type: mimeType || blob.type || 'application/octet-stream',
+  })
+}
+
 export async function fetchAkoolVoices(): Promise<AkoolVoice[]> {
   const response = await fetch(`${AKOOL_API_BASE}/voices`, {
     headers: await authHeaders(),

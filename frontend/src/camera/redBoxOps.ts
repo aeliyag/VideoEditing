@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 import type { FrameRect, ProjectDocument, RedBoxEffect } from '../types/project'
 import { isRedBoxEffect, MAIN_VIDEO_TRACK_ID } from '../types/project'
-import { clipDuration, getVideoTrack } from '../timeline/helpers'
+import { clipDuration, getVideoTrack, MIN_CLIP_DURATION } from '../timeline/helpers'
 
 /** Default length for a newly created red-box annotation (seconds). */
 export const DEFAULT_RED_BOX_DURATION = 15
@@ -18,44 +18,74 @@ function clampAnnotationRect(rect: FrameRect): FrameRect {
   }
 }
 
-export function setClipRedBox(
+function computeNewRedBoxTiming(
+  clip: { timelineStart: number; sourceStart: number; sourceEnd: number },
+  timelinePlayhead: number | undefined,
+): { startOffset: number; endOffset: number } {
+  const duration = clipDuration(clip)
+  const local =
+    timelinePlayhead === undefined
+      ? 0
+      : Math.max(0, Math.min(duration, timelinePlayhead - clip.timelineStart))
+  let startOffset = local
+  let endOffset = Math.min(duration, local + DEFAULT_RED_BOX_DURATION)
+  if (endOffset - startOffset < MIN_CLIP_DURATION) {
+    startOffset = Math.max(0, duration - Math.min(DEFAULT_RED_BOX_DURATION, duration))
+    endOffset = duration
+  }
+  return { startOffset, endOffset }
+}
+
+export function addClipRedBox(
   doc: ProjectDocument,
   clipId: string,
   rect: FrameRect,
   timelinePlayhead?: number,
-): ProjectDocument {
+): { document: ProjectDocument; effectId: string } | null {
   const track = getVideoTrack(doc)
   const clip = track?.clips.find((candidate) => candidate.id === clipId)
   if (!clip) {
-    return doc
-  }
-  const existing = clip.effects.find(isRedBoxEffect)
-  const duration = clipDuration(clip)
-  let startOffset = existing?.startOffset ?? 0
-  let endOffset = existing?.endOffset ?? Math.min(DEFAULT_RED_BOX_DURATION, duration)
-
-  if (!existing) {
-    // New boxes begin at the playhead (within the clip) and last up to 15s.
-    const local =
-      timelinePlayhead === undefined
-        ? 0
-        : Math.max(0, Math.min(duration, timelinePlayhead - clip.timelineStart))
-    startOffset = local
-    endOffset = Math.min(duration, local + DEFAULT_RED_BOX_DURATION)
-    if (endOffset - startOffset < 0.05) {
-      startOffset = Math.max(0, duration - Math.min(DEFAULT_RED_BOX_DURATION, duration))
-      endOffset = duration
-    }
+    return null
   }
 
+  const { startOffset, endOffset } = computeNewRedBoxTiming(clip, timelinePlayhead)
   const redBox: RedBoxEffect = {
     type: 'red-box',
-    id: existing?.id ?? uuidv4(),
+    id: uuidv4(),
     rect: clampAnnotationRect(rect),
     strokeWidth: 4,
     startOffset,
     endOffset,
   }
+  return {
+    effectId: redBox.id,
+    document: {
+      ...doc,
+      tracks: doc.tracks.map((track) =>
+        track.id === MAIN_VIDEO_TRACK_ID
+          ? {
+              ...track,
+              clips: track.clips.map((clip) =>
+                clip.id === clipId
+                  ? {
+                      ...clip,
+                      effects: [...clip.effects, redBox],
+                    }
+                  : clip,
+              ),
+            }
+          : track,
+      ),
+    },
+  }
+}
+
+export function updateClipRedBox(
+  doc: ProjectDocument,
+  clipId: string,
+  effectId: string,
+  rect: FrameRect,
+): ProjectDocument {
   return {
     ...doc,
     tracks: doc.tracks.map((track) =>
@@ -66,10 +96,11 @@ export function setClipRedBox(
               clip.id === clipId
                 ? {
                     ...clip,
-                    effects: [
-                      ...clip.effects.filter((effect) => !isRedBoxEffect(effect)),
-                      redBox,
-                    ],
+                    effects: clip.effects.map((effect) =>
+                      isRedBoxEffect(effect) && effect.id === effectId
+                        ? { ...effect, rect: clampAnnotationRect(rect) }
+                        : effect,
+                    ),
                   }
                 : clip,
             ),
@@ -110,11 +141,11 @@ export function trimClipRedBox(
                       return side === 'start'
                         ? {
                             ...effect,
-                            startOffset: Math.min(offset, effect.endOffset - 0.05),
+                            startOffset: Math.min(offset, effect.endOffset - MIN_CLIP_DURATION),
                           }
                         : {
                             ...effect,
-                            endOffset: Math.max(offset, effect.startOffset + 0.05),
+                            endOffset: Math.max(offset, effect.startOffset + MIN_CLIP_DURATION),
                           }
                     }),
                   }
@@ -129,6 +160,7 @@ export function trimClipRedBox(
 export function removeClipRedBox(
   doc: ProjectDocument,
   clipId: string,
+  effectId: string,
 ): ProjectDocument {
   return {
     ...doc,
@@ -141,7 +173,7 @@ export function removeClipRedBox(
                 ? {
                     ...clip,
                     effects: clip.effects.filter(
-                      (effect) => !isRedBoxEffect(effect),
+                      (effect) => !isRedBoxEffect(effect) || effect.id !== effectId,
                     ),
                   }
                 : clip,

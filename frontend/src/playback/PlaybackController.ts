@@ -13,8 +13,58 @@ import {
 
 export type PlaybackListener = (timelineTime: number, isPlaying: boolean) => void
 
+const MEDIA_SEEK_TIMEOUT_MS = 2000
+const AUDIO_DRIFT_THRESHOLD = 0.35
+const VIDEO_DRIFT_THRESHOLD = 0.2
+/** Ignore decoded media time if it disagrees with wall-clock by more than this (stale after seek). */
+const MEDIA_CLOCK_STALE_THRESHOLD = 1
+
 function audioClipSyncKey(clip: TimelineClip): string {
   return `${clip.id}:${clip.timelineStart}:${clip.sourceStart}:${clip.sourceEnd}`
+}
+
+function waitForMediaEvent(
+  media: HTMLMediaElement,
+  eventName: 'seeked' | 'loadedmetadata',
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, timeoutMs)
+
+    const onEvent = () => {
+      cleanup()
+      resolve()
+    }
+
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      media.removeEventListener(eventName, onEvent)
+    }
+
+    media.addEventListener(eventName, onEvent, { once: true })
+  })
+}
+
+async function seekMediaToTime(
+  media: HTMLMediaElement,
+  sourceTime: number,
+): Promise<void> {
+  const duration = Number.isFinite(media.duration) ? media.duration : undefined
+  const clamped =
+    duration != null && duration > 0
+      ? Math.max(0, Math.min(sourceTime, Math.max(0, duration - 1e-4)))
+      : Math.max(0, sourceTime)
+
+  if (Math.abs(media.currentTime - clamped) < 1e-4 && media.readyState >= 2) {
+    return
+  }
+
+  const seekPromise = waitForMediaEvent(media, 'seeked', MEDIA_SEEK_TIMEOUT_MS)
+  media.currentTime = clamped
+  await seekPromise
 }
 
 export class PlaybackController {
@@ -30,6 +80,7 @@ export class PlaybackController {
   private activeClipId: string | null = null
   private activeAudioSourceId: string | null = null
   private activeAudioSyncKey: string | null = null
+  private syncGeneration = 0
 
   setVideoElement(video: HTMLVideoElement | null): void {
     this.video = video
@@ -80,8 +131,10 @@ export class PlaybackController {
       return
     }
     this.timelineTime = clampPlayhead(timelineTime, this.document)
-    void this.syncVideoToTimeline(this.timelineTime, true)
-    void this.syncAudioToTimeline(this.timelineTime, true)
+    this.syncGeneration++
+    const generation = this.syncGeneration
+    void this.syncVideoToTimeline(this.timelineTime, true, generation)
+    void this.syncAudioToTimeline(this.timelineTime, true, generation)
     this.emit()
   }
 
@@ -89,29 +142,16 @@ export class PlaybackController {
     if (!this.document || totalDuration(this.document) <= 0) {
       return
     }
-    if (this.timelineTime >= totalDuration(this.document)) {
-      this.timelineTime = 0
-      void this.syncVideoToTimeline(this.timelineTime, true)
-      void this.syncAudioToTimeline(this.timelineTime, true)
-    }
     this.playing = true
-    this.lastWallTime = performance.now()
-    void this.syncVideoToTimeline(this.timelineTime, true).then(() => {
-      if (this.playing) {
-        void this.video?.play()
-      }
-    })
-    void this.syncAudioToTimeline(this.timelineTime, true).then(() => {
-      if (this.playing) {
-        void this.audio?.play()
-      }
-    })
-    this.startLoop()
+    this.syncGeneration++
+    const generation = this.syncGeneration
+    void this.startPlaybackAfterSync(generation)
     this.emit()
   }
 
   pause(): void {
     this.playing = false
+    this.syncGeneration++
     this.stopLoop()
     this.video?.pause()
     this.audio?.pause()
@@ -139,6 +179,91 @@ export class PlaybackController {
     }
   }
 
+  private async startPlaybackAfterSync(generation: number): Promise<void> {
+    const doc = this.document
+    if (!doc || !this.playing || generation !== this.syncGeneration) {
+      return
+    }
+
+    if (this.timelineTime >= totalDuration(doc)) {
+      this.timelineTime = 0
+    }
+
+    await Promise.all([
+      this.syncVideoToTimeline(this.timelineTime, true, generation),
+      this.syncAudioToTimeline(this.timelineTime, true, generation),
+    ])
+
+    if (!this.playing || generation !== this.syncGeneration) {
+      return
+    }
+
+    // Start A/V together only after both seeks finish, so the playhead does not
+    // run on wall-clock while one element is already decoding.
+    await this.playReadyMedia()
+
+    if (!this.playing || generation !== this.syncGeneration) {
+      return
+    }
+
+    this.lastWallTime = performance.now()
+    this.startLoop()
+  }
+
+  private async playReadyMedia(): Promise<void> {
+    const tasks: Promise<unknown>[] = []
+    if (this.video && this.video.paused && this.activeSourceId) {
+      tasks.push(this.video.play().catch(() => undefined))
+    }
+    if (this.audio && this.audio.paused && this.activeAudioSourceId) {
+      tasks.push(this.audio.play().catch(() => undefined))
+    }
+    if (tasks.length > 0) {
+      await Promise.all(tasks)
+    }
+  }
+
+  /** Timeline time implied by the playing media clock, or null if it should not drive the playhead. */
+  private readMediaTimelineTime(): number | null {
+    const doc = this.document
+    if (!doc) {
+      return null
+    }
+
+    const videoClip = clipAtTime(doc, this.timelineTime)
+    if (
+      videoClip &&
+      this.video &&
+      !this.video.paused &&
+      this.activeClipId === videoClip.id &&
+      !this.isImageClip(videoClip)
+    ) {
+      const decoded =
+        videoClip.timelineStart + (this.video.currentTime - videoClip.sourceStart)
+      const end = clipTimelineEnd(videoClip)
+      if (decoded >= videoClip.timelineStart - 0.05 && decoded <= end + 0.08) {
+        return decoded
+      }
+    }
+
+    const audioClip = audioClipAtTime(doc, this.timelineTime)
+    if (
+      audioClip &&
+      this.audio &&
+      !this.audio.paused &&
+      this.activeAudioSyncKey === audioClipSyncKey(audioClip)
+    ) {
+      const decoded =
+        audioClip.timelineStart + (this.audio.currentTime - audioClip.sourceStart)
+      const end = clipTimelineEnd(audioClip)
+      if (decoded >= audioClip.timelineStart - 0.05 && decoded <= end + 0.08) {
+        return decoded
+      }
+    }
+
+    return null
+  }
+
   private startLoop(): void {
     if (this.rafId !== null) {
       return
@@ -151,18 +276,14 @@ export class PlaybackController {
       const delta = (now - this.lastWallTime) / 1000
       this.lastWallTime = now
       const max = totalDuration(this.document)
-      const activeClip = clipAtTime(this.document, this.timelineTime)
-      let next = this.timelineTime + delta
-      if (activeClip && this.video && !this.video.paused) {
-        const decodedTimelineTime =
-          activeClip.timelineStart +
-          (this.video.currentTime - activeClip.sourceStart)
-        if (
-          decodedTimelineTime >= activeClip.timelineStart &&
-          decodedTimelineTime <= clipTimelineEnd(activeClip) + 0.05
-        ) {
-          next = Math.max(this.timelineTime, decodedTimelineTime)
-        }
+      const wallNext = this.timelineTime + delta
+      const mediaNext = this.readMediaTimelineTime()
+      let next = wallNext
+      if (
+        mediaNext != null &&
+        Math.abs(mediaNext - wallNext) <= MEDIA_CLOCK_STALE_THRESHOLD
+      ) {
+        next = mediaNext
       }
       if (next >= max) {
         next = max
@@ -220,6 +341,7 @@ export class PlaybackController {
   private async syncVideoToTimeline(
     timelineTime: number,
     forceSeek: boolean,
+    generation?: number,
   ): Promise<void> {
     const video = this.video
     const doc = this.document
@@ -251,20 +373,32 @@ export class PlaybackController {
     if (this.activeSourceId !== clip.sourceId) {
       this.activeSourceId = clip.sourceId
       video.src = asset.objectUrl
-      await new Promise<void>((resolve) => {
-        const onLoaded = () => {
-          video.removeEventListener('loadedmetadata', onLoaded)
-          resolve()
-        }
-        video.addEventListener('loadedmetadata', onLoaded)
-      })
+      if (video.readyState < 1) {
+        await waitForMediaEvent(video, 'loadedmetadata', MEDIA_SEEK_TIMEOUT_MS)
+      }
+      if (generation !== undefined && generation !== this.syncGeneration) {
+        return
+      }
     }
 
     const sourceTime = timelineToSourceTime(clip, timelineTime)
-    if (forceSeek || clipChanged || Math.abs(video.currentTime - sourceTime) > 0.2) {
-      video.currentTime = sourceTime
+    const needsSeek =
+      forceSeek ||
+      clipChanged ||
+      Math.abs(video.currentTime - sourceTime) > VIDEO_DRIFT_THRESHOLD
+
+    if (needsSeek) {
+      if (forceSeek) {
+        await seekMediaToTime(video, sourceTime)
+      } else {
+        video.currentTime = sourceTime
+      }
+      if (generation !== undefined && generation !== this.syncGeneration) {
+        return
+      }
     }
-    if (this.playing && video.paused) {
+
+    if (this.playing && this.rafId !== null && video.paused) {
       void video.play()
     }
   }
@@ -299,6 +433,12 @@ export class PlaybackController {
       return
     }
 
+    const sourceTime = timelineToSourceTime(clip, timelineTime)
+    if (Math.abs(audio.currentTime - sourceTime) > AUDIO_DRIFT_THRESHOLD) {
+      void this.syncAudioToTimeline(timelineTime, true)
+      return
+    }
+
     if (audio.paused) {
       void audio.play()
     }
@@ -307,6 +447,7 @@ export class PlaybackController {
   private async syncAudioToTimeline(
     timelineTime: number,
     forceSeek: boolean,
+    generation?: number,
   ): Promise<void> {
     const audio = this.audio
     const doc = this.document
@@ -333,26 +474,34 @@ export class PlaybackController {
     if (this.activeAudioSourceId !== clip.sourceId) {
       this.activeAudioSourceId = clip.sourceId
       audio.src = asset.objectUrl
-      await new Promise<void>((resolve) => {
-        const onLoaded = () => {
-          audio.removeEventListener('loadedmetadata', onLoaded)
-          resolve()
-        }
-        audio.addEventListener('loadedmetadata', onLoaded)
-      })
+      if (audio.readyState < 1) {
+        await waitForMediaEvent(audio, 'loadedmetadata', MEDIA_SEEK_TIMEOUT_MS)
+      }
+      if (generation !== undefined && generation !== this.syncGeneration) {
+        return
+      }
     }
 
     const sourceTime = timelineToSourceTime(clip, timelineTime)
-    if (forceSeek || clipChanged) {
-      audio.currentTime = sourceTime
-    } else if (Math.abs(audio.currentTime - sourceTime) > 0.35) {
-      // User scrubbed or the timeline jumped — one corrective seek only.
-      audio.currentTime = sourceTime
+    const needsSeek =
+      forceSeek ||
+      clipChanged ||
+      Math.abs(audio.currentTime - sourceTime) > AUDIO_DRIFT_THRESHOLD
+
+    if (needsSeek) {
+      if (forceSeek) {
+        await seekMediaToTime(audio, sourceTime)
+      } else {
+        audio.currentTime = sourceTime
+      }
+      if (generation !== undefined && generation !== this.syncGeneration) {
+        return
+      }
     }
 
     this.activeAudioSyncKey = syncKey
 
-    if (this.playing && audio.paused) {
+    if (this.playing && this.rafId !== null && audio.paused) {
       void audio.play()
     }
   }

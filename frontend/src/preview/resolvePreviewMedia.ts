@@ -5,6 +5,7 @@ import type {
   ProjectDocument,
   TimelineClip,
 } from '../types/project'
+import { isCameraEffect } from '../types/project'
 
 export function materialForClip(
   doc: ProjectDocument,
@@ -43,13 +44,14 @@ export function resolvePreviewObjectUrl(asset: MediaAsset): string {
   return asset.objectUrl
 }
 
-/** Camera/Ken Burns transform applies to video clips only — not still images. */
+/** Apply camera/Ken Burns preview when the clip has saved frame-bank crops (matches export). */
 export function shouldApplyCameraPreview(
-  doc: ProjectDocument,
+  _doc: ProjectDocument,
   clip: TimelineClip,
-  asset: MediaAsset | undefined,
+  _asset: MediaAsset | undefined,
 ): boolean {
-  return !isImagePreviewClip(doc, clip, asset)
+  const camera = clip.effects.find(isCameraEffect)
+  return Boolean(camera && (camera.startFrameId || camera.endFrameId))
 }
 
 export function isImagePreviewClipFromStore(

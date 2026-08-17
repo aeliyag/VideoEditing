@@ -101,7 +101,7 @@ describe('resolvePreviewMedia', () => {
     expect(resolved.startsWith('blob:')).toBe(true)
   })
 
-  it('skips camera preview for freeze-frame and uploaded image clips', () => {
+  it('skips camera preview when image clip has no saved frame-bank crops', () => {
     const clip: TimelineClip = {
       id: 'clip-freeze',
       sourceId: 'freeze-1',
@@ -113,6 +113,43 @@ describe('resolvePreviewMedia', () => {
     const doc = docWithMaterials([freezeFrameMaterial], clip)
     const asset = imageAsset('freeze-1', 'clip_freeze_1000ms.png')
     expect(shouldApplyCameraPreview(doc, clip, asset)).toBe(false)
+  })
+
+  it('applies camera preview for freeze-frame clips with saved frame-bank crops', () => {
+    const clip: TimelineClip = {
+      id: 'clip-freeze',
+      sourceId: 'freeze-1',
+      sourceStart: 0,
+      sourceEnd: 2,
+      timelineStart: 0,
+      effects: [{ type: 'camera', startFrameId: 'frame-start', endFrameId: null }],
+    }
+    const doc = docWithMaterials([freezeFrameMaterial], clip)
+    const asset = imageAsset('freeze-1', 'clip_freeze_1000ms.png')
+    expect(shouldApplyCameraPreview(doc, clip, asset)).toBe(true)
+  })
+
+  it('applies camera preview for video clips with saved frame-bank crops', () => {
+    const clip: TimelineClip = {
+      id: 'clip-video',
+      sourceId: 'video-1',
+      sourceStart: 0,
+      sourceEnd: 5,
+      timelineStart: 0,
+      effects: [{ type: 'camera', startFrameId: 'frame-start', endFrameId: 'frame-end' }],
+    }
+    const doc = docWithMaterials([], clip)
+    const asset: MediaAsset = {
+      id: 'video-1',
+      file: new File([], 'clip.mp4', { type: 'video/mp4' }),
+      objectUrl: 'blob:video-1',
+      duration: 5,
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      hasAudio: true,
+    }
+    expect(shouldApplyCameraPreview(doc, clip, asset)).toBe(true)
   })
 })
 

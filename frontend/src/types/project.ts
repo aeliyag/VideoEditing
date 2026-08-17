@@ -13,6 +13,14 @@ export interface MaterialEntry {
   kind: MaterialKind
   origin: MaterialOrigin
   addedAt: number
+  /** Saved when origin is TTS so the narration can be regenerated with a new voice. */
+  tts?: TtsGeneration
+}
+
+export interface TtsGeneration {
+  prompt: string
+  voiceId: string
+  rate: string
 }
 
 export type TrackKind = 'video' | 'overlay' | 'audio' | 'camera'
@@ -48,9 +56,53 @@ export interface RedBoxEffect {
   endOffset: number
 }
 
+export type ElementKind = 'image' | 'text' | 'shape'
+
+interface ElementEffectBase {
+  type: 'element'
+  id: string
+  /** Normalized against the owning clip's source frame. */
+  rect: FrameRect
+  /** Layer order among the clip's elements; higher draws on top. */
+  z: number
+  /** Seconds relative to the owning clip. */
+  startOffset: number
+  endOffset: number
+  opacity: number
+}
+
+export interface ImageElementEffect extends ElementEffectBase {
+  kind: 'image'
+  /** MaterialEntry / MediaAsset id. */
+  sourceId: string
+}
+
+export interface TextElementEffect extends ElementEffectBase {
+  kind: 'text'
+  text: string
+  /** Font size as a fraction of frame height, so it is resolution independent. */
+  fontScale: number
+  fontFamily: string
+  fontWeight: number
+  color: string
+  align: 'left' | 'center' | 'right'
+  backgroundColor: string | null
+}
+
+export interface ShapeElementEffect extends ElementEffectBase {
+  kind: 'shape'
+  shape: 'rect' | 'ellipse'
+  fill: string | null
+  stroke: string | null
+  strokeWidth: number
+}
+
+export type ElementEffect = ImageElementEffect | TextElementEffect | ShapeElementEffect
+
 export type Effect =
   | CameraEffect
   | RedBoxEffect
+  | ElementEffect
   | { type: string; [key: string]: unknown }
 
 export interface TimelineClip {
@@ -93,6 +145,8 @@ export type MediaStore = Map<string, MediaAsset>
 export interface EditorUiState {
   playhead: number
   selectedClipId: string | null
+  selectedRedBoxEffectId: string | null
+  selectedElementId: string | null
   isPlaying: boolean
 }
 
@@ -105,4 +159,8 @@ export function isCameraEffect(effect: Effect): effect is CameraEffect {
 
 export function isRedBoxEffect(effect: Effect): effect is RedBoxEffect {
   return effect.type === 'red-box'
+}
+
+export function isElementEffect(effect: Effect): effect is ElementEffect {
+  return effect.type === 'element'
 }

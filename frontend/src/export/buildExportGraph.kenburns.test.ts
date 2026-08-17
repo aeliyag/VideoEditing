@@ -288,11 +288,13 @@ describe('Ken Burns filter chain', () => {
     }
     const mediaStore = new Map([['source-1', asset]])
     const videoTrack = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    const clip = videoTrack.clips[0]!
     const graph = buildExportGraph({
       doc,
       clips: videoTrack.clips,
       ttsClips: [],
-      inputIndexBySource: new Map([['source-1', 0]]),
+      inputIndexByVideoClipId: new Map([[clip.id, 0]]),
+      inputIndexByTtsClipId: new Map(),
       mediaStore,
       mediaKindBySource: new Map([['source-1', classifyExportAsset(asset)]]),
       audioStreamBySource: new Map([['source-1', false]]),

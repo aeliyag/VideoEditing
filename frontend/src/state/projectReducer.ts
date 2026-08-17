@@ -6,7 +6,10 @@ import type {
   MaterialEntry,
   MaterialKind,
   MaterialOrigin,
+  TtsGeneration,
+  ElementEffect,
 } from '../types/project'
+import { isElementEffect } from '../types/project'
 import {
   addClipFromSource,
   addAudioClipFromSource,
@@ -17,6 +20,7 @@ import {
   ensureProjectTracks,
   moveAudioClip,
   reorderClipByDrag,
+  retargetClipsToNewDuration,
   splitAtPlayhead,
   trimClip,
 } from '../timeline/operations'
@@ -33,10 +37,18 @@ import {
 } from '../timeline/freezeFrame'
 import { clampPlayhead, findClipById, resolveDeleteClipId, totalDuration } from '../timeline/helpers'
 import {
+  addClipRedBox,
   removeClipRedBox,
-  setClipRedBox,
   trimClipRedBox,
+  updateClipRedBox,
 } from '../camera/redBoxOps'
+import {
+  addClipElement,
+  removeClipElement,
+  reorderClipElement,
+  trimClipElement,
+  updateClipElement,
+} from '../elements/elementOps'
 
 export type ProjectAction =
   | { type: 'IMPORT_MEDIA'; asset: MediaAsset }
@@ -50,17 +62,27 @@ export type ProjectAction =
       addFirstVideoToTimeline?: boolean
       /** When set, video/audio materials are placed on the timeline at this time. */
       addToTimelineAtPlayhead?: number
+      tts?: TtsGeneration
     }
   | { type: 'ADD_MATERIAL_TO_TIMELINE'; asset: MediaAsset; track: 'video' | 'audio'; timelineStart: number }
   | { type: 'REMOVE_MATERIAL'; materialId: string }
   | { type: 'DETACH_AUDIO'; clipId: string }
-  | { type: 'ADD_TTS_CLIP'; asset: MediaAsset; timelineStart: number }
+  | { type: 'ADD_TTS_CLIP'; asset: MediaAsset; timelineStart: number; tts?: TtsGeneration }
+  | {
+      type: 'REPLACE_TTS_MATERIAL'
+      materialId: string
+      previousDuration: number
+      nextDuration: number
+      tts: TtsGeneration
+    }
   | { type: 'SET_PLAYHEAD'; time: number }
   | { type: 'SELECT_CLIP'; clipId: string | null }
+  | { type: 'SELECT_RED_BOX'; clipId: string; effectId: string | null }
   | { type: 'SET_PLAYING'; isPlaying: boolean }
   | { type: 'SPLIT_AT_PLAYHEAD'; fps: number }
   | {
       type: 'FREEZE_FRAME_AT_PLAYHEAD'
+      playhead: number
       assetId: string
       materialName: string
       fps: number
@@ -83,9 +105,37 @@ export type ProjectAction =
   | { type: 'APPLY_FRAME_TO_CLIP_END'; clipId: string; frameId: string }
   | { type: 'RENAME_FRAME'; frameId: string; name: string }
   | { type: 'DELETE_FRAME'; frameId: string }
-  | { type: 'SET_CLIP_RED_BOX'; clipId: string; rect: FrameRect; timelinePlayhead?: number }
-  | { type: 'REMOVE_CLIP_RED_BOX'; clipId: string }
+  | { type: 'ADD_CLIP_RED_BOX'; clipId: string; rect: FrameRect; timelinePlayhead?: number }
+  | { type: 'UPDATE_CLIP_RED_BOX'; clipId: string; effectId: string; rect: FrameRect }
+  | { type: 'REMOVE_CLIP_RED_BOX'; clipId: string; effectId: string }
   | { type: 'TRIM_RED_BOX'; clipId: string; effectId: string; side: 'start' | 'end'; timelineTime: number }
+  | {
+      type: 'ADD_CLIP_ELEMENT'
+      clipId: string
+      element: Omit<ElementEffect, 'type' | 'id' | 'z' | 'startOffset' | 'endOffset'>
+      timelinePlayhead?: number
+    }
+  | {
+      type: 'UPDATE_CLIP_ELEMENT'
+      clipId: string
+      elementId: string
+      patch: Partial<Omit<ElementEffect, 'type' | 'id'>>
+    }
+  | { type: 'REMOVE_CLIP_ELEMENT'; clipId: string; elementId: string }
+  | {
+      type: 'TRIM_CLIP_ELEMENT'
+      clipId: string
+      elementId: string
+      side: 'start' | 'end'
+      timelineTime: number
+    }
+  | {
+      type: 'REORDER_CLIP_ELEMENT'
+      clipId: string
+      elementId: string
+      direction: 'forward' | 'backward'
+    }
+  | { type: 'SELECT_ELEMENT'; clipId: string; elementId: string | null }
   | {
       type: 'LOAD_PROJECT'
       document: ProjectDocument
@@ -105,6 +155,8 @@ export function createInitialState(): ProjectState {
     ui: {
       playhead: 0,
       selectedClipId: null,
+      selectedRedBoxEffectId: null,
+      selectedElementId: null,
       isPlaying: false,
     },
   }
@@ -121,6 +173,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ui: {
           playhead: action.playhead,
           selectedClipId: action.selectedClipId,
+          selectedRedBoxEffectId: null,
+          selectedElementId: null,
           isPlaying: false,
         },
       }
@@ -139,6 +193,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ui: {
           playhead: 0,
           selectedClipId: document.tracks[0]?.clips[0]?.id ?? null,
+          selectedRedBoxEffectId: null,
+          selectedElementId: null,
           isPlaying: false,
         },
       }
@@ -151,6 +207,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         kind: action.kind,
         origin: action.origin,
         addedAt: Date.now(),
+        tts: action.tts,
       }
       let document = ensureProjectTracks(state.document)
       const materials = document.materials ?? []
@@ -228,7 +285,14 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'REMOVE_MATERIAL': {
       const inUse = state.document.tracks.some((t) =>
-        t.clips.some((c) => c.sourceId === action.materialId),
+        t.clips.some(
+          (c) =>
+            c.sourceId === action.materialId ||
+            c.effects.some(
+              (e) =>
+                isElementEffect(e) && e.kind === 'image' && e.sourceId === action.materialId,
+            ),
+        ),
       )
       if (inUse) {
         return state
@@ -264,6 +328,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         kind: 'audio',
         origin: 'tts',
         addedAt: Date.now(),
+        tts: action.tts,
       }
       const materials = document.materials.some((m) => m.id === entry.id)
         ? document.materials
@@ -279,6 +344,24 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       }
     }
 
+    case 'REPLACE_TTS_MATERIAL': {
+      const materials = (state.document.materials ?? []).map((material) =>
+        material.id === action.materialId
+          ? { ...material, tts: action.tts }
+          : material,
+      )
+      const document = retargetClipsToNewDuration(
+        { ...state.document, materials },
+        action.materialId,
+        action.previousDuration,
+        action.nextDuration,
+      )
+      return {
+        ...state,
+        document,
+      }
+    }
+
     case 'SET_PLAYHEAD':
       return {
         ...state,
@@ -291,7 +374,34 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
     case 'SELECT_CLIP':
       return {
         ...state,
-        ui: { ...state.ui, selectedClipId: action.clipId },
+        ui: {
+          ...state.ui,
+          selectedClipId: action.clipId,
+          selectedRedBoxEffectId: null,
+          selectedElementId: null,
+        },
+      }
+
+    case 'SELECT_RED_BOX':
+      return {
+        ...state,
+        ui: {
+          ...state.ui,
+          selectedClipId: action.clipId,
+          selectedRedBoxEffectId: action.effectId,
+          selectedElementId: null,
+        },
+      }
+
+    case 'SELECT_ELEMENT':
+      return {
+        ...state,
+        ui: {
+          ...state.ui,
+          selectedClipId: action.clipId,
+          selectedRedBoxEffectId: null,
+          selectedElementId: action.elementId,
+        },
       }
 
     case 'SET_PLAYING':
@@ -319,7 +429,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
     case 'FREEZE_FRAME_AT_PLAYHEAD': {
       const result = insertFreezeFrameAtPlayhead(
         state.document,
-        state.ui.playhead,
+        action.playhead,
         action.fps,
         action.assetId,
         action.freezeDuration ?? DEFAULT_FREEZE_FRAME_DURATION,
@@ -333,7 +443,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ui: {
           ...state.ui,
           selectedClipId: result.freezeClipId,
-          playhead: clampPlayhead(state.ui.playhead, result.document),
+          playhead: clampPlayhead(action.playhead, result.document),
         },
       }
     }
@@ -358,6 +468,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ui: {
           ...state.ui,
           selectedClipId: null,
+          selectedRedBoxEffectId: null,
+          selectedElementId: null,
           playhead: clampPlayhead(state.ui.playhead, document),
           isPlaying: max > 0 ? state.ui.isPlaying : false,
         },
@@ -448,18 +560,38 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       return { ...state, document }
     }
 
-    case 'SET_CLIP_RED_BOX': {
-      const document = setClipRedBox(
+    case 'ADD_CLIP_RED_BOX': {
+      const result = addClipRedBox(
         state.document,
         action.clipId,
         action.rect,
         action.timelinePlayhead,
       )
+      if (!result) {
+        return state
+      }
+      return {
+        document: result.document,
+        ui: {
+          ...state.ui,
+          selectedClipId: action.clipId,
+          selectedRedBoxEffectId: result.effectId,
+        },
+      }
+    }
+
+    case 'UPDATE_CLIP_RED_BOX': {
+      const document = updateClipRedBox(
+        state.document,
+        action.clipId,
+        action.effectId,
+        action.rect,
+      )
       return { ...state, document }
     }
 
     case 'REMOVE_CLIP_RED_BOX': {
-      const document = removeClipRedBox(state.document, action.clipId)
+      const document = removeClipRedBox(state.document, action.clipId, action.effectId)
       return { ...state, document }
     }
 
@@ -470,6 +602,73 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         action.effectId,
         action.side,
         action.timelineTime,
+      )
+      return { ...state, document }
+    }
+
+    case 'ADD_CLIP_ELEMENT': {
+      const result = addClipElement(
+        state.document,
+        action.clipId,
+        action.element,
+        action.timelinePlayhead,
+      )
+      if (!result) {
+        return state
+      }
+      return {
+        document: result.document,
+        ui: {
+          ...state.ui,
+          selectedClipId: action.clipId,
+          selectedElementId: result.effectId,
+          selectedRedBoxEffectId: null,
+        },
+      }
+    }
+
+    case 'UPDATE_CLIP_ELEMENT': {
+      const document = updateClipElement(
+        state.document,
+        action.clipId,
+        action.elementId,
+        action.patch,
+      )
+      return { ...state, document }
+    }
+
+    case 'REMOVE_CLIP_ELEMENT': {
+      const document = removeClipElement(state.document, action.clipId, action.elementId)
+      return {
+        ...state,
+        document,
+        ui: {
+          ...state.ui,
+          selectedElementId:
+            state.ui.selectedElementId === action.elementId
+              ? null
+              : state.ui.selectedElementId,
+        },
+      }
+    }
+
+    case 'TRIM_CLIP_ELEMENT': {
+      const document = trimClipElement(
+        state.document,
+        action.clipId,
+        action.elementId,
+        action.side,
+        action.timelineTime,
+      )
+      return { ...state, document }
+    }
+
+    case 'REORDER_CLIP_ELEMENT': {
+      const document = reorderClipElement(
+        state.document,
+        action.clipId,
+        action.elementId,
+        action.direction,
       )
       return { ...state, document }
     }
