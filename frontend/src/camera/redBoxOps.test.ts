@@ -6,6 +6,7 @@ import type { MediaAsset } from '../types/project'
 import { MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   addClipRedBox,
+  moveClipRedBox,
   removeClipRedBox,
   trimClipRedBox,
   updateClipRedBox,
@@ -86,6 +87,58 @@ describe('redBoxOps', () => {
     const boxes = remaining.effects.filter((effect) => effect.type === 'red-box')
     expect(boxes).toHaveLength(1)
     expect(boxes[0]?.rect.x).toBeCloseTo(0.5)
+  })
+
+  it('moves a red box while preserving its duration and clip bounds', () => {
+    const asset = mockAsset()
+    let doc = createEmptyProject()
+    doc = addClipFromSource(doc, asset, 0)
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+
+    doc = addClipRedBox(doc, clipId, { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, 0)!.document
+    const effectId = doc.tracks
+      .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      .clips[0]!.effects.find((effect) => effect.type === 'red-box')!.id
+    doc = trimClipRedBox(doc, clipId, effectId, 'end', 4)
+
+    const readBox = (document: typeof doc) =>
+      document.tracks
+        .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+        .clips[0]!.effects.find((effect) => effect.type === 'red-box')!
+
+    const moved = readBox(moveClipRedBox(doc, clipId, effectId, 3))
+    expect(moved.startOffset).toBeCloseTo(3)
+    expect(moved.endOffset).toBeCloseTo(7)
+
+    const pastEnd = readBox(moveClipRedBox(doc, clipId, effectId, 100))
+    expect(pastEnd.startOffset).toBeCloseTo(6)
+    expect(pastEnd.endOffset).toBeCloseTo(10)
+
+    const beforeStart = readBox(moveClipRedBox(doc, clipId, effectId, -5))
+    expect(beforeStart.startOffset).toBeCloseTo(0)
+    expect(beforeStart.endOffset).toBeCloseTo(4)
+  })
+
+  it('keeps the red-box rect untouched when moving it', () => {
+    const asset = mockAsset()
+    let doc = createEmptyProject()
+    doc = addClipFromSource(doc, asset, 0)
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+
+    doc = addClipRedBox(doc, clipId, { x: 0.25, y: 0.35, width: 0.2, height: 0.2 }, 0)!.document
+    const effectId = doc.tracks
+      .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      .clips[0]!.effects.find((effect) => effect.type === 'red-box')!.id
+    doc = trimClipRedBox(doc, clipId, effectId, 'end', 2)
+    doc = moveClipRedBox(doc, clipId, effectId, 5)
+
+    const box = doc.tracks
+      .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      .clips[0]!.effects.find((effect) => effect.type === 'red-box')!
+    expect(box.rect.x).toBeCloseTo(0.25)
+    expect(box.rect.y).toBeCloseTo(0.35)
+    expect(box.startOffset).toBeCloseTo(5)
+    expect(box.endOffset).toBeCloseTo(7)
   })
 
   it('does not trim red-box annotations below the minimum duration', () => {

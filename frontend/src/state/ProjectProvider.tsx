@@ -14,6 +14,7 @@ import { flushSync } from 'react-dom'
 import { exportProjectToMp4 } from '../export/ExportEngine'
 import { generateAkoolTts } from '../akool/client'
 import { getClipCameraRectAtTimelineTime } from '../camera/frames'
+import { collectAllElements } from '../elements/elementOps'
 import { importDebug } from '../debug/importDebug'
 import {
   captureVideoFrameToFile,
@@ -134,13 +135,36 @@ function clearMediaStore(store: MediaStore): void {
   }
 }
 
+function shouldMarkDirty(action: ProjectAction): boolean {
+  switch (action.type) {
+    case 'SET_PLAYHEAD':
+    case 'SET_PLAYING':
+    case 'SELECT_CLIP':
+    case 'SELECT_RED_BOX':
+    case 'SELECT_ELEMENT':
+      return false
+    default:
+      return true
+  }
+}
+
+function formatSaveError(err: unknown): string {
+  return err instanceof Error ? err.message : 'Save failed.'
+}
+
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
   const userId = user?.id ?? null
   const stateRef = useRef<ProjectState>(createInitialState())
+  const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {})
   const reducerWithRef = useCallback((state: ProjectState, action: ProjectAction): ProjectState => {
     const next = projectReducer(state, action)
     stateRef.current = next
+    if (action.type === 'LOAD_PROJECT' || action.type === 'RESET_PROJECT') {
+      setIsDirtyRef.current(false)
+    } else if (shouldMarkDirty(action)) {
+      setIsDirtyRef.current(true)
+    }
     return next
   }, [])
   const [state, dispatch] = useReducer(reducerWithRef, undefined, createInitialState)
@@ -152,6 +176,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [activeSaveId, setActiveSaveId] = useState<string | null>(null)
   const [savedProjects, setSavedProjects] = useState<SavedProjectMeta[]>([])
   const [libraryMessage, setLibraryMessage] = useState('')
+  const [isDirty, setIsDirty] = useState(false)
+  setIsDirtyRef.current = setIsDirty
   const [effectEditorMode, setEffectEditorMode] = useState<EffectEditorMode>(null)
   const [elementsPanelOpen, setElementsPanelOpen] = useState(true)
   const [ttsEdit, setTtsEdit] = useState<{ materialId: string; tts: TtsGeneration } | null>(
@@ -159,6 +185,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   )
   const mediaStoreRef = useRef(mediaStore)
   mediaStoreRef.current = mediaStore
+  const forceUploadMediaIdsRef = useRef(new Set<string>())
   const historyRef = useRef<HistoryStacks>(createHistoryStacks())
   const captureVideoRef = useRef<HTMLVideoElement | null>(null)
   const freezeInProgressRef = useRef(false)
@@ -281,6 +308,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       duration: asset.duration,
       storeSizeBefore: mediaStoreRef.current.size,
     })
+    if (mediaStoreRef.current.has(asset.id)) {
+      forceUploadMediaIdsRef.current.add(asset.id)
+    }
     const next = new Map(mediaStoreRef.current)
     next.set(asset.id, asset)
     mediaStoreRef.current = next
@@ -405,6 +435,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshSavedProjects()
   }, [refreshSavedProjects])
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isDirty) {
+        event.preventDefault()
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [isDirty])
 
   useEffect(() => {
     importDebug('ProjectProvider mounted — filter console with [import]')
@@ -723,18 +763,31 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const saveCurrentProject = useCallback(
     async (name?: string) => {
       const resolvedName = (name ?? projectName).trim() || 'Untitled timeline'
-      const meta = await saveProjectVersion(userId, {
-        id: activeSaveId ?? undefined,
-        name: resolvedName,
-        document: stateRef.current.document,
-        mediaStore: mediaStoreRef.current,
-        playhead: stateRef.current.ui.playhead,
-        selectedClipId: stateRef.current.ui.selectedClipId,
-      })
-      setActiveSaveId(meta.id)
-      setProjectName(meta.name)
-      setLibraryMessage(`Saved “${meta.name}”`)
-      await refreshSavedProjects()
+      try {
+        const meta = await saveProjectVersion(userId, {
+          id: activeSaveId ?? undefined,
+          name: resolvedName,
+          document: stateRef.current.document,
+          mediaStore: mediaStoreRef.current,
+          playhead: stateRef.current.ui.playhead,
+          selectedClipId: stateRef.current.ui.selectedClipId,
+          forceUploadMediaIds: forceUploadMediaIdsRef.current,
+        })
+        forceUploadMediaIdsRef.current.clear()
+        setActiveSaveId(meta.id)
+        setProjectName(meta.name)
+        setIsDirty(false)
+        const elementCount = collectAllElements(stateRef.current.document).length
+        const elementSuffix =
+          elementCount > 0
+            ? ` (${elementCount} element${elementCount === 1 ? '' : 's'})`
+            : ''
+        setLibraryMessage(`Saved “${meta.name}”${elementSuffix}`)
+        await refreshSavedProjects()
+      } catch (err) {
+        setLibraryMessage(`Save failed: ${formatSaveError(err)}`)
+        throw err
+      }
     },
     [
       userId,
@@ -746,17 +799,30 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
   const saveProjectAs = useCallback(
     async (name: string) => {
-      const meta = await saveProjectVersion(userId, {
-        name,
-        document: stateRef.current.document,
-        mediaStore: mediaStoreRef.current,
-        playhead: stateRef.current.ui.playhead,
-        selectedClipId: stateRef.current.ui.selectedClipId,
-      })
-      setActiveSaveId(meta.id)
-      setProjectName(meta.name)
-      setLibraryMessage(`Saved new version “${meta.name}”`)
-      await refreshSavedProjects()
+      try {
+        const meta = await saveProjectVersion(userId, {
+          name,
+          document: stateRef.current.document,
+          mediaStore: mediaStoreRef.current,
+          playhead: stateRef.current.ui.playhead,
+          selectedClipId: stateRef.current.ui.selectedClipId,
+          forceUploadMediaIds: forceUploadMediaIdsRef.current,
+        })
+        forceUploadMediaIdsRef.current.clear()
+        setActiveSaveId(meta.id)
+        setProjectName(meta.name)
+        setIsDirty(false)
+        const elementCount = collectAllElements(stateRef.current.document).length
+        const elementSuffix =
+          elementCount > 0
+            ? ` (${elementCount} element${elementCount === 1 ? '' : 's'})`
+            : ''
+        setLibraryMessage(`Saved new version “${meta.name}”${elementSuffix}`)
+        await refreshSavedProjects()
+      } catch (err) {
+        setLibraryMessage(`Save failed: ${formatSaveError(err)}`)
+        throw err
+      }
     },
     [userId, refreshSavedProjects],
   )
@@ -795,6 +861,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       playbackController.seek(loaded.playhead)
       setActiveSaveId(id)
       setProjectName(loaded.name)
+      forceUploadMediaIdsRef.current.clear()
+      setIsDirty(false)
       setLibraryMessage(`Opened “${loaded.name}”`)
       await refreshSavedProjects()
     },
@@ -822,7 +890,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'RESET_PROJECT' })
     setActiveSaveId(null)
     setProjectName('Untitled timeline')
+    forceUploadMediaIdsRef.current.clear()
+    setIsDirty(false)
     setLibraryMessage('Started a new timeline.')
+  }, [])
+
+  const updateProjectName = useCallback((name: string) => {
+    setProjectName(name)
+    setIsDirty(true)
   }, [])
 
   const value = useMemo(
@@ -849,7 +924,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       primaryFps,
       primaryAsset,
       projectName,
-      setProjectName,
+      setProjectName: updateProjectName,
       activeSaveId,
       savedProjects,
       refreshSavedProjects,

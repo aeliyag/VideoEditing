@@ -24,6 +24,7 @@ export async function saveProjectVersion(
     mediaStore: MediaStore
     playhead: number
     selectedClipId: string | null
+    forceUploadMediaIds?: ReadonlySet<string>
   },
 ): Promise<SavedProjectMeta> {
   return cloud.saveProjectVersion(requireUserId(userId), args)

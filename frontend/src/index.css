@@ -546,6 +546,10 @@ label.btn {
   color: var(--muted);
 }
 
+.toolbar-meta-error {
+  color: #f87171;
+}
+
 .btn {
   padding: 0.45rem 0.85rem;
   border-radius: 6px;
@@ -751,13 +755,19 @@ label.btn {
   font-size: 0.68rem;
   overflow: hidden;
   user-select: none;
-  cursor: pointer;
+  cursor: grab;
 }
 
 .annotation-timeline-item-selected {
   border-color: #fff;
   box-shadow: 0 0 0 1px #fff;
   background: rgba(255, 45, 45, 0.45);
+}
+
+.annotation-timeline-item-dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+  z-index: 3;
 }
 
 .annotation-trim {

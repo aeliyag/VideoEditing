@@ -254,7 +254,11 @@ export function Toolbar() {
         </div>
       )}
       {(libraryMessage || hasClips) && (
-        <p className="toolbar-meta">
+        <p
+          className={`toolbar-meta${
+            libraryMessage.startsWith('Save failed') ? ' toolbar-meta-error' : ''
+          }`}
+        >
           {libraryMessage ? `${libraryMessage} · ` : ''}
           {hasClips && track
             ? `${sortedClips(track).length} clip(s) · playhead ${state.ui.playhead.toFixed(2)}s`
@@ -264,6 +268,10 @@ export function Toolbar() {
       {libraryOpen && (
         <div className="project-library">
           <h3 className="frame-bank-title">Saved timelines</h3>
+          <p className="crop-panel-hint">
+            <strong>Save</strong> updates the linked timeline in place.{' '}
+            <strong>Save as…</strong> creates a new library entry.
+          </p>
           {savedProjects.length === 0 ? (
             <p className="crop-panel-hint">
               No saved versions yet. Use Save or Save as… to keep a timeline (video

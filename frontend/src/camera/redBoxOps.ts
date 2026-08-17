@@ -157,6 +157,49 @@ export function trimClipRedBox(
   }
 }
 
+/** Shifts a red box along the timeline, preserving its duration and keeping it inside the clip. */
+export function moveClipRedBox(
+  doc: ProjectDocument,
+  clipId: string,
+  effectId: string,
+  timelineStart: number,
+): ProjectDocument {
+  const track = getVideoTrack(doc)
+  const clip = track?.clips.find((candidate) => candidate.id === clipId)
+  if (!clip) {
+    return doc
+  }
+  const duration = clipDuration(clip)
+  return {
+    ...doc,
+    tracks: doc.tracks.map((candidateTrack) =>
+      candidateTrack.id === MAIN_VIDEO_TRACK_ID
+        ? {
+            ...candidateTrack,
+            clips: candidateTrack.clips.map((candidateClip) =>
+              candidateClip.id === clipId
+                ? {
+                    ...candidateClip,
+                    effects: candidateClip.effects.map((effect) => {
+                      if (!isRedBoxEffect(effect) || effect.id !== effectId) {
+                        return effect
+                      }
+                      const span = Math.min(effect.endOffset - effect.startOffset, duration)
+                      const startOffset = Math.max(
+                        0,
+                        Math.min(duration - span, timelineStart - clip.timelineStart),
+                      )
+                      return { ...effect, startOffset, endOffset: startOffset + span }
+                    }),
+                  }
+                : candidateClip,
+            ),
+          }
+        : candidateTrack,
+    ),
+  }
+}
+
 export function removeClipRedBox(
   doc: ProjectDocument,
   clipId: string,

@@ -165,7 +165,10 @@ export function Timeline() {
               effect={effect}
               pxPerSecond={PX_PER_SECOND}
               selected={state.ui.selectedRedBoxEffectId === effect.id}
-              onSelect={() => {
+              onSelect={() =>
+                dispatch({ type: 'SELECT_RED_BOX', clipId: clip.id, effectId: effect.id })
+              }
+              onOpen={() => {
                 dispatch({ type: 'SELECT_RED_BOX', clipId: clip.id, effectId: effect.id })
                 openEffectEditor('red-box')
               }}
@@ -176,6 +179,14 @@ export function Timeline() {
                   effectId: effect.id,
                   side,
                   timelineTime,
+                })
+              }
+              onMove={(timelineStart) =>
+                dispatch({
+                  type: 'MOVE_RED_BOX',
+                  clipId: clip.id,
+                  effectId: effect.id,
+                  timelineStart,
                 })
               }
             />
@@ -252,7 +263,8 @@ export function Timeline() {
       </div>
       <p className="timeline-hint">
         Click to seek · select a clip · Delete/Backspace removes · drag to reorder · drag trim
-        handles to shorten or extend clips · Cmd/Ctrl+Z to undo
+        handles to shorten or extend clips · drag a red box to re-time it, double-click to edit ·
+        Cmd/Ctrl+Z to undo
       </p>
     </section>
   )

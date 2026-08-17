@@ -5,8 +5,9 @@ import type { MediaAsset, MediaStore, ProjectDocument } from '../types/project'
 import { totalDuration } from '../timeline/helpers'
 import { getVideoTrack } from '../timeline/helpers'
 import type { SavedProjectMeta } from './projectLibrary'
+import { PROJECT_MEDIA_BUCKET, uploadProjectMedia } from './storageUpload'
 
-const BUCKET = 'project-media'
+const BUCKET = PROJECT_MEDIA_BUCKET
 
 interface ProjectRow {
   id: string
@@ -103,6 +104,8 @@ export async function saveProjectVersion(
     mediaStore: MediaStore
     playhead: number
     selectedClipId: string | null
+    /** Media ids that must be re-uploaded even when already stored (e.g. TTS replace). */
+    forceUploadMediaIds?: ReadonlySet<string>
   },
 ): Promise<SavedProjectMeta> {
   const projectId = args.id ?? uuidv4()
@@ -122,35 +125,10 @@ export async function saveProjectVersion(
     throw new Error(existingError.message)
   }
 
-  const currentMediaIds = new Set<string>()
-  const mediaRows: ProjectMediaRow[] = []
-
-  for (const asset of args.mediaStore.values()) {
-    currentMediaIds.add(asset.id)
-    const storagePath = mediaStoragePath(userId, projectId, asset.id, asset.file.name)
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET)
-      .upload(storagePath, asset.file, { upsert: true, contentType: asset.file.type || undefined })
-
-    if (uploadError) {
-      throw new Error(uploadError.message)
-    }
-
-    mediaRows.push({
-      id: asset.id,
-      project_id: projectId,
-      user_id: userId,
-      storage_path: storagePath,
-      file_name: asset.file.name,
-      mime_type: asset.file.type || 'application/octet-stream',
-      duration: asset.duration,
-      fps: asset.fps,
-      width: asset.width,
-      height: asset.height,
-      has_audio: asset.hasAudio,
-      updated_at: now,
-    })
-  }
+  const existingMediaIds = new Set(
+    (existingMedia ?? []).map((row) => row.id as string),
+  )
+  const forceUpload = args.forceUploadMediaIds ?? new Set<string>()
 
   const { error: projectError } = await supabase.from('projects').upsert(
     {
@@ -170,6 +148,36 @@ export async function saveProjectVersion(
 
   if (projectError) {
     throw new Error(projectError.message)
+  }
+
+  const currentMediaIds = new Set<string>()
+  const mediaRows: ProjectMediaRow[] = []
+
+  for (const asset of args.mediaStore.values()) {
+    currentMediaIds.add(asset.id)
+    const storagePath = mediaStoragePath(userId, projectId, asset.id, asset.file.name)
+    const skipUpload = existingMediaIds.has(asset.id) && !forceUpload.has(asset.id)
+
+    let resolvedStoragePath = storagePath
+    if (!skipUpload) {
+      const uploaded = await uploadProjectMedia(storagePath, asset.file, { upsert: true })
+      resolvedStoragePath = uploaded.storagePath
+    }
+
+    mediaRows.push({
+      id: asset.id,
+      project_id: projectId,
+      user_id: userId,
+      storage_path: resolvedStoragePath,
+      file_name: asset.file.name,
+      mime_type: asset.file.type || 'application/octet-stream',
+      duration: asset.duration,
+      fps: asset.fps,
+      width: asset.width,
+      height: asset.height,
+      has_audio: asset.hasAudio,
+      updated_at: now,
+    })
   }
 
   if (mediaRows.length > 0) {

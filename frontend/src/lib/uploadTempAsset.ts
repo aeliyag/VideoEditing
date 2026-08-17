@@ -1,8 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 
+import { uploadProjectMedia } from '../storage/storageUpload'
 import { supabase } from './supabase'
-
-const BUCKET = 'project-media'
 
 function fileExtension(fileName: string): string {
   const dot = fileName.lastIndexOf('.')
@@ -12,16 +11,10 @@ function fileExtension(fileName: string): string {
 /** Upload a local file and return a signed URL Akool can fetch (1 hour). */
 export async function uploadTempAssetUrl(file: File, userId: string): Promise<string> {
   const path = `${userId}/temp/${uuidv4()}${fileExtension(file.name)}`
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(path, file, { upsert: false, contentType: file.type || undefined })
-
-  if (uploadError) {
-    throw new Error(uploadError.message)
-  }
+  await uploadProjectMedia(path, file, { upsert: false })
 
   const { data, error: signError } = await supabase.storage
-    .from(BUCKET)
+    .from('project-media')
     .createSignedUrl(path, 3600)
 
   if (signError || !data?.signedUrl) {

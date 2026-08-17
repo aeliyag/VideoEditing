@@ -38,6 +38,7 @@ import {
 import { clampPlayhead, findClipById, resolveDeleteClipId, totalDuration } from '../timeline/helpers'
 import {
   addClipRedBox,
+  moveClipRedBox,
   removeClipRedBox,
   trimClipRedBox,
   updateClipRedBox,
@@ -109,6 +110,7 @@ export type ProjectAction =
   | { type: 'UPDATE_CLIP_RED_BOX'; clipId: string; effectId: string; rect: FrameRect }
   | { type: 'REMOVE_CLIP_RED_BOX'; clipId: string; effectId: string }
   | { type: 'TRIM_RED_BOX'; clipId: string; effectId: string; side: 'start' | 'end'; timelineTime: number }
+  | { type: 'MOVE_RED_BOX'; clipId: string; effectId: string; timelineStart: number }
   | {
       type: 'ADD_CLIP_ELEMENT'
       clipId: string
@@ -602,6 +604,16 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         action.effectId,
         action.side,
         action.timelineTime,
+      )
+      return { ...state, document }
+    }
+
+    case 'MOVE_RED_BOX': {
+      const document = moveClipRedBox(
+        state.document,
+        action.clipId,
+        action.effectId,
+        action.timelineStart,
       )
       return { ...state, document }
     }
