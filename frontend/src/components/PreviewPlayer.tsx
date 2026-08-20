@@ -10,6 +10,9 @@ import {
   clampFreeRect,
   cropRectToPreviewLayout,
 } from '../camera/frames'
+import {
+  resolveRedBoxOverlayLayout,
+} from '../camera/overlayCoords'
 import { clipAtTime, findClipById, mediaRectInContainer } from '../timeline/helpers'
 import { playbackController } from '../playback/PlaybackController'
 import {
@@ -48,9 +51,11 @@ export function PreviewPlayer() {
     closeEffectEditor,
     recordUndoSnapshot,
   } = useProject()
-  const audioRef = useRef<HTMLAudioElement>(null)
   const setVideoNode = useCallback((node: HTMLVideoElement | null) => {
     playbackController.setVideoElement(node)
+  }, [])
+  const setAudioNode = useCallback((node: HTMLAudioElement | null) => {
+    playbackController.setAudioElement(node)
   }, [])
   const stageRef = useRef<HTMLDivElement>(null)
   const [cameraSlot, setCameraSlot] = useState<CameraSlot>('start')
@@ -64,6 +69,7 @@ export function PreviewPlayer() {
   const [includeEnd, setIncludeEnd] = useState(false)
   const [redBoxDraft, setRedBoxDraft] = useState<FrameRect>(DEFAULT_RED_BOX_DRAFT)
   const [displayRect, setDisplayRect] = useState({ x: 0, y: 0, width: 0, height: 0 })
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
   const [activeClipDisplayRect, setActiveClipDisplayRect] = useState({
     x: 0,
     y: 0,
@@ -123,11 +129,6 @@ export function PreviewPlayer() {
   }
 
   useEffect(() => {
-    playbackController.setAudioElement(audioRef.current)
-    return () => playbackController.setAudioElement(null)
-  }, [])
-
-  useEffect(() => {
     if (!selectedClip) {
       setStartDraft({ rect: FULL_FRAME_RECT, name: 'Start frame' })
       setEndDraft(null)
@@ -182,11 +183,18 @@ export function PreviewPlayer() {
   const activeClipSourceWidth = activeAsset?.width || sourceWidth
   const activeClipSourceHeight = activeAsset?.height || sourceHeight
 
+  const previewClip =
+    editorMode === 'red-box' && selectedClip ? selectedClip : activeClip
+  const previewClipAsset = previewClip ? mediaStore.get(previewClip.sourceId) : undefined
+  const previewClipSourceWidth = previewClipAsset?.width || activeClipSourceWidth
+  const previewClipSourceHeight = previewClipAsset?.height || activeClipSourceHeight
+
   const updateDisplayRect = useCallback(() => {
     const stage = stageRef.current
     if (!stage) {
       return
     }
+    setStageSize({ width: stage.clientWidth, height: stage.clientHeight })
     setDisplayRect(
       mediaRectInContainer(
         stage.clientWidth,
@@ -242,10 +250,13 @@ export function PreviewPlayer() {
     state.document.materials,
   ])
 
+  const cameraPreviewClip =
+    editorMode === 'red-box' && selectedClip ? selectedClip : activeClip
+
   const applyCameraPreview = Boolean(
-    activeClip &&
-      activeAsset &&
-      shouldApplyCameraPreview(state.document, activeClip, activeAsset),
+    cameraPreviewClip &&
+      previewClipAsset &&
+      shouldApplyCameraPreview(state.document, cameraPreviewClip, previewClipAsset),
   )
 
   const videoMuted = Boolean(activeClip?.muteVideoAudio)
@@ -265,16 +276,24 @@ export function PreviewPlayer() {
     }
   }
 
+  const redBoxOverlayLayout = resolveRedBoxOverlayLayout({
+    stageWidth: stageSize.width,
+    stageHeight: stageSize.height,
+    clipWidth: previewClipSourceWidth,
+    clipHeight: previewClipSourceHeight,
+    cameraPreviewActive: applyCameraPreview,
+  })
+
   const previewRect =
     editorMode === 'camera' && selectedClip && !state.ui.isPlaying
       ? FULL_FRAME_RECT
-      : activeClip && applyCameraPreview
+      : cameraPreviewClip && applyCameraPreview
         ? getClipCameraRectAtTimelineTime(
             state.document,
-            activeClip,
+            cameraPreviewClip,
             state.ui.playhead,
-            sourceWidth,
-            sourceHeight,
+            previewClipAsset?.width ?? sourceWidth,
+            previewClipAsset?.height ?? sourceHeight,
           )
         : FULL_FRAME_RECT
 
@@ -283,8 +302,6 @@ export function PreviewPlayer() {
   const activeClipOffset = activeClip
     ? state.ui.playhead - activeClip.timelineStart
     : 0
-  const previewClip =
-    editorMode === 'red-box' && selectedClip ? selectedClip : activeClip
   const previewClipOffset = previewClip
     ? editorMode === 'red-box'
       ? state.ui.playhead - previewClip.timelineStart
@@ -308,10 +325,11 @@ export function PreviewPlayer() {
   const renderStaticRedBox = (rect: FrameRect, key: string) => {
     const pixel = rectToPixel(
       rect,
-      displayRect,
+      redBoxOverlayLayout.display,
       undefined,
-      sourceWidth,
-      sourceHeight,
+      redBoxOverlayLayout.frameWidth,
+      redBoxOverlayLayout.frameHeight,
+      redBoxOverlayLayout.usesOutputFrameSpace,
     )
     return (
       <div
@@ -367,7 +385,7 @@ export function PreviewPlayer() {
 
   return (
     <>
-      <audio ref={audioRef} className="hidden" preload="auto" />
+      <audio ref={setAudioNode} className="hidden" preload="auto" />
       <div className="preview-tool-buttons">
         <button
           type="button"
@@ -459,14 +477,15 @@ export function PreviewPlayer() {
               {otherVisibleRedBoxes.map((effect) =>
                 renderStaticRedBox(effect.rect, effect.id),
               )}
-              {editingRedBox && displayRect.width > 0 && (
+              {editingRedBox && redBoxOverlayLayout.display.width > 0 && (
                 <EditableRect
                   rect={redBoxDraft}
-                  display={displayRect}
+                  display={redBoxOverlayLayout.display}
                   className="red-box-overlay red-box-editing"
                   onChange={setRedBoxDraft}
-                  sourceWidth={sourceWidth}
-                  sourceHeight={sourceHeight}
+                  sourceWidth={redBoxOverlayLayout.frameWidth}
+                  sourceHeight={redBoxOverlayLayout.frameHeight}
+                  outputFrameSpace={redBoxOverlayLayout.usesOutputFrameSpace}
                 />
               )}
               {activeClip && activeClipDisplayRect.width > 0 && (

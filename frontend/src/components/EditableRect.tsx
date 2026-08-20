@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { clampCameraRect, clampFreeRect } from '../camera/frames'
+import { clampOutputFrameRect, mapOutputFrameRectToPixel } from '../camera/overlayCoords'
 import type { FrameRect } from '../types/project'
 
 export function pixelRectToNormalized(
@@ -10,12 +11,20 @@ export function pixelRectToNormalized(
   sourceWidth: number,
   sourceHeight: number,
   forceSquare = false,
+  outputFrameSpace = false,
 ): FrameRect {
   const raw = {
     x: (px.x - display.x) / display.width,
     y: (px.y - display.y) / display.height,
     width: px.width / display.width,
     height: px.height / display.height,
+  }
+  if (outputFrameSpace) {
+    if (forceSquare) {
+      const size = Math.max(0.02, Math.min(raw.width, raw.height))
+      return clampOutputFrameRect({ ...raw, width: size, height: size })
+    }
+    return clampOutputFrameRect(raw)
   }
   if (pixelAspect) {
     return clampCameraRect(raw, sourceWidth, sourceHeight, pixelAspect)
@@ -33,7 +42,11 @@ export function rectToPixel(
   pixelAspect: number | undefined,
   sourceWidth: number,
   sourceHeight: number,
+  outputFrameSpace = false,
 ): { x: number; y: number; width: number; height: number } {
+  if (outputFrameSpace) {
+    return mapOutputFrameRectToPixel(clampOutputFrameRect(rect), display)
+  }
   const r = pixelAspect
     ? clampCameraRect(rect, sourceWidth, sourceHeight, pixelAspect)
     : clampFreeRect(rect)
@@ -54,6 +67,8 @@ interface EditableRectProps {
   pixelAspect?: number
   sourceWidth?: number
   sourceHeight?: number
+  /** When true, rect is normalized against the post-camera output frame. */
+  outputFrameSpace?: boolean
   selected?: boolean
   onSelect?: () => void
   onDragStart?: () => void
@@ -68,12 +83,20 @@ export function EditableRect({
   pixelAspect,
   sourceWidth = 1920,
   sourceHeight = 1080,
+  outputFrameSpace = false,
   selected = false,
   onSelect,
   onDragStart,
   children,
 }: EditableRectProps) {
-  const px = rectToPixel(rect, display, pixelAspect, sourceWidth, sourceHeight)
+  const px = rectToPixel(
+    rect,
+    display,
+    pixelAspect,
+    sourceWidth,
+    sourceHeight,
+    outputFrameSpace,
+  )
 
   const startDrag = (event: React.PointerEvent) => {
     event.stopPropagation()
@@ -94,6 +117,8 @@ export function EditableRect({
           pixelAspect,
           sourceWidth,
           sourceHeight,
+          false,
+          outputFrameSpace,
         ),
       )
     }
@@ -163,6 +188,7 @@ export function EditableRect({
           sourceWidth,
           sourceHeight,
           aspect === 1 && !pixelAspect,
+          outputFrameSpace,
         )
 
         onChange(nextRect)

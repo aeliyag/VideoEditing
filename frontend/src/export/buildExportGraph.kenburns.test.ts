@@ -13,14 +13,22 @@ import {
   DEFAULT_KEN_BURNS_OPTIONS,
   EXPORT_FPS,
   type KenBurnsRenderOptions,
+  buildAspectCorrectKenBurnsFilterChain,
   buildCameraZoompanExpressions,
   buildExportGraph,
   buildKenBurnsFilterChain,
+  buildPadded169KenBurnsFilterChain,
   classifyExportAsset,
+  clampBoxDimension,
   computeCameraLastFrame,
   evalCameraRectAtFrame,
   measureZoompanCoordinateStalls,
+  resolveAspectCorrectIntermediateSize,
+  resolveClipFrameDimensions,
+  resolvePadded169Layout,
+  transformRectToPadded169Space,
 } from './buildExportGraph'
+import { assignClipCameraStart } from '../camera/frameBankOps'
 
 const FULL = { x: 0, y: 0, width: 1, height: 1 }
 const CENTER_HALF = { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }
@@ -59,6 +67,66 @@ function buildKenBurnsGraph(
     : `[0:v]trim=duration=${duration},setpts=PTS-STARTPTS,fps=${options.outputFps},format=yuv420p[vin];`
   const chain = buildKenBurnsFilterChain('vin', 'outv', pan, outW, outH, options)
   return `${input}${chain}`
+}
+
+function buildAspectCorrectGraph(
+  start: typeof FULL,
+  end: typeof FULL,
+  duration: number,
+  width: number,
+  height: number,
+  options: KenBurnsRenderOptions,
+  loop = false,
+): string {
+  const outW = evenDim(width)
+  const outH = evenDim(height)
+  const layout = resolvePadded169Layout(outW, outH)
+  const paddedStart = transformRectToPadded169Space(start, layout, outW, outH)
+  const paddedEnd = transformRectToPadded169Space(end, layout, outW, outH)
+  const pan = buildCameraZoompanExpressions(paddedStart, paddedEnd, duration, options.renderFps)
+  const input = loop
+    ? `[0:v]loop=loop=-1:size=1:start=0,trim=duration=${duration},setpts=PTS-STARTPTS,fps=${options.outputFps},format=yuv420p[vin];`
+    : `[0:v]trim=duration=${duration},setpts=PTS-STARTPTS,fps=${options.outputFps},format=yuv420p[vin];`
+  const chain = buildPadded169KenBurnsFilterChain('vin', 'outv', pan, outW, outH, layout, options)
+  return `${input}${chain}`
+}
+
+function readFrameRgb(path: string, width: number, height: number): Buffer {
+  const rawPath = `${path}.rgb`
+  execSync(
+    `ffmpeg -y -loglevel error -i "${path}" -frames:v 1 -f rawvideo -pix_fmt rgb24 "${rawPath}"`,
+    { stdio: 'pipe' },
+  )
+  return readFileSync(rawPath)
+}
+
+function countBluePixels(buffer: Buffer): number {
+  let count = 0
+  for (let i = 0; i < buffer.length; i += 3) {
+    if (buffer[i + 2]! > 200 && buffer[i]! < 50 && buffer[i + 1]! < 50) {
+      count++
+    }
+  }
+  return count
+}
+
+function countRedPixels(buffer: Buffer): number {
+  let count = 0
+  for (let i = 0; i < buffer.length; i += 3) {
+    if (buffer[i]! > 200 && buffer[i + 1]! < 50 && buffer[i + 2]! < 50) {
+      count++
+    }
+  }
+  return count
+}
+
+function createStaticGridImage(path: string, width: number, height: number): void {
+  execSync(
+    `ffmpeg -y -f lavfi -i "color=c=white:s=${width}x${height},` +
+      `drawgrid=width=32:height=32:thickness=2:color=black" ` +
+      `-frames:v 1 -pix_fmt yuv420p "${path}"`,
+    { stdio: 'pipe' },
+  )
 }
 
 function renderFramePng(
@@ -465,4 +533,307 @@ describe.skipIf(!canRender)('Ken Burns ffmpeg render', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 120_000)
+})
+
+const WIDE_WIDTH = 3456
+const WIDE_HEIGHT = 2234
+/** Saved-project failure case: top-left, near-full static crop on non-16:9 image. */
+const TOP_LEFT_WIDE = { x: 0, y: 0, width: 1, height: 0.87 }
+
+describe.skipIf(!ffmpegAvailable())('Aspect-correct Ken Burns ffmpeg render', () => {
+  it('renders static top-left near-full crop on non-16:9 image without filter errors', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aspect-correct-'))
+    const image = join(dir, 'wide.png')
+    const out = join(dir, 'out.mp4')
+    try {
+      createStaticGridImage(image, WIDE_WIDTH, WIDE_HEIGHT)
+      const filter = buildAspectCorrectGraph(
+        TOP_LEFT_WIDE,
+        TOP_LEFT_WIDE,
+        sampleDuration,
+        WIDE_WIDTH,
+        WIDE_HEIGHT,
+        VARIANTS.B,
+        true,
+      )
+      execSync(
+        `ffmpeg -y -loop 1 -i "${image}" -filter_complex "${filter}" -map "[outv]" ` +
+          `-t ${sampleDuration} -c:v libx264 -preset ultrafast "${out}"`,
+        { stdio: 'pipe' },
+      )
+      const probe = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${out}"`,
+      )
+        .toString()
+        .trim()
+      expect(probe).toBe(`${evenDim(WIDE_WIDTH)},${evenDim(WIDE_HEIGHT)}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('renders odd source dimensions without crop bounds errors', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aspect-correct-'))
+    const image = join(dir, 'odd.png')
+    const out = join(dir, 'out.mp4')
+    try {
+      createStaticGridImage(image, 1921, 1081)
+      const filter = buildAspectCorrectGraph(
+        { x: 0, y: 0, width: 0.9, height: 0.55 },
+        { x: 0, y: 0, width: 0.9, height: 0.55 },
+        sampleDuration,
+        1921,
+        1081,
+        VARIANTS.B,
+        true,
+      )
+      execSync(
+        `ffmpeg -y -loop 1 -i "${image}" -filter_complex "${filter}" -map "[outv]" ` +
+          `-t ${sampleDuration} -c:v libx264 -preset ultrafast "${out}"`,
+        { stdio: 'pipe' },
+      )
+      const probe = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${out}"`,
+      )
+        .toString()
+        .trim()
+      expect(probe).toBe(`${evenDim(1921)},${evenDim(1081)}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('crops the bottom of a wide image for a static near-full top crop', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aspect-correct-'))
+    const image = join(dir, 'wide.png')
+    const cropped = join(dir, 'cropped.png')
+    try {
+      execSync(
+        `ffmpeg -y -f lavfi -i "color=c=0xff0000:s=${WIDE_WIDTH}x${Math.round(WIDE_HEIGHT * 0.87)}[top];` +
+          `color=c=0x0000ff:s=${WIDE_WIDTH}x${WIDE_HEIGHT - Math.round(WIDE_HEIGHT * 0.87)}[bottom];` +
+          `[top][bottom]vstack=inputs=2" -frames:v 1 -pix_fmt yuv420p "${image}"`,
+        { stdio: 'pipe' },
+      )
+      const filter = buildAspectCorrectGraph(
+        TOP_LEFT_WIDE,
+        TOP_LEFT_WIDE,
+        sampleDuration,
+        WIDE_WIDTH,
+        WIDE_HEIGHT,
+        VARIANTS.B,
+        true,
+      )
+      renderFramePng(image, filter, 0, cropped)
+      const outW = evenDim(WIDE_WIDTH)
+      const outH = evenDim(WIDE_HEIGHT)
+      const frame = readFrameRgb(cropped, outW, outH)
+      expect(countRedPixels(frame)).toBeGreaterThan(outW * outH * 0.5)
+      expect(countBluePixels(frame)).toBeLessThan(outW * outH * 0.01)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('renders non-16:9 camera crop followed by drawbox with aligned pixels', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aspect-correct-'))
+    const image = join(dir, 'wide.png')
+    const out = join(dir, 'out.mp4')
+    try {
+      createStaticGridImage(image, WIDE_WIDTH, WIDE_HEIGHT)
+      const layout = resolvePadded169Layout(evenDim(WIDE_WIDTH), evenDim(WIDE_HEIGHT))
+      const paddedStart = transformRectToPadded169Space(
+        TOP_LEFT_WIDE,
+        layout,
+        evenDim(WIDE_WIDTH),
+        evenDim(WIDE_HEIGHT),
+      )
+      const pan = buildCameraZoompanExpressions(paddedStart, paddedStart, sampleDuration)
+      const frameSize = resolveClipFrameDimensions({
+        id: 'img',
+        file: new File([], 'wide.png'),
+        objectUrl: '',
+        duration: 10,
+        fps: 0,
+        width: WIDE_WIDTH,
+        height: WIDE_HEIGHT,
+        hasAudio: false,
+      })
+      const rbX = Math.round(0.2 * frameSize.width)
+      const rbY = Math.round(0.3 * frameSize.height)
+      const rbW = clampBoxDimension(0.25 * frameSize.width)
+      const rbH = clampBoxDimension(0.2 * frameSize.height)
+      const camera = buildPadded169KenBurnsFilterChain(
+        'vin',
+        'vcam',
+        pan,
+        evenDim(WIDE_WIDTH),
+        evenDim(WIDE_HEIGHT),
+        layout,
+        VARIANTS.B,
+      )
+      const filter =
+        `[0:v]loop=loop=-1:size=1:start=0,trim=duration=${sampleDuration},setpts=PTS-STARTPTS,fps=30,format=yuv420p[vin];` +
+        `${camera};` +
+        `[vcam]drawbox=x=${rbX}:y=${rbY}:w=${rbW}:h=${rbH}:color=red@1:t=4[outv]`
+      expect(filter).toContain('pad=')
+      execSync(
+        `ffmpeg -y -loop 1 -i "${image}" -filter_complex "${filter}" -map "[outv]" ` +
+          `-t ${sampleDuration} -c:v libx264 -preset ultrafast "${out}"`,
+        { stdio: 'pipe' },
+      )
+      const png = join(dir, 'frame.png')
+      renderFramePng(image, filter, 0, png)
+      const frame = readFrameRgb(png, evenDim(WIDE_WIDTH), evenDim(WIDE_HEIGHT))
+      let redCount = 0
+      for (let i = 0; i < frame.length; i += 3) {
+        if (frame[i]! > 180 && frame[i + 1]! < 80 && frame[i + 2]! < 80) {
+          redCount++
+        }
+      }
+      expect(redCount).toBeGreaterThan(100)
+      expect(existsSync(out)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('animated non-16:9 crop reaches a different final frame than the start', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aspect-correct-'))
+    const image = join(dir, 'wide.png')
+    try {
+      createStaticGridImage(image, WIDE_WIDTH, WIDE_HEIGHT)
+      const endRect = { x: 0.05, y: 0.05, width: 0.7, height: 0.45 }
+      const filter = buildAspectCorrectGraph(
+        TOP_LEFT_WIDE,
+        endRect,
+        sampleDuration,
+        WIDE_WIDTH,
+        WIDE_HEIGHT,
+        VARIANTS.B,
+        true,
+      )
+      const last = computeCameraLastFrame(sampleDuration, 30)
+      const f0 = join(dir, 'f0.png')
+      const fLast = join(dir, 'fLast.png')
+      renderFramePng(image, filter, 0, f0)
+      renderFramePng(image, filter, last, fLast)
+      expect(hashFile(f0)).not.toBe(hashFile(fLast))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('builds export graph with aspect-correct intermediate for wide image clip', () => {
+    let doc = addClipFromSource(createEmptyProject(), {
+      id: 'wide-img',
+      file: new File([], 'screenshot.png', { type: 'image/png' }),
+      objectUrl: 'blob:test',
+      duration: 10,
+      fps: 0,
+      width: WIDE_WIDTH,
+      height: WIDE_HEIGHT,
+      hasAudio: false,
+    })
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0].id
+    doc = assignClipCameraStart(
+      doc,
+      clipId,
+      TOP_LEFT_WIDE,
+      'Crop',
+      WIDE_WIDTH,
+      WIDE_HEIGHT,
+    )
+    const asset = {
+      id: 'wide-img',
+      file: new File([], 'screenshot.png', { type: 'image/png' }),
+      objectUrl: 'blob:test',
+      duration: 10,
+      fps: 0,
+      width: WIDE_WIDTH,
+      height: WIDE_HEIGHT,
+      hasAudio: false,
+    }
+    const videoTrack = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    const clip = videoTrack.clips[0]!
+    const graph = buildExportGraph({
+      doc,
+      clips: videoTrack.clips,
+      ttsClips: [],
+      inputIndexByVideoClipId: new Map([[clip.id, 0]]),
+      inputIndexByTtsClipId: new Map(),
+      mediaStore: new Map([['wide-img', asset]]),
+      mediaKindBySource: new Map([['wide-img', classifyExportAsset(asset)]]),
+      audioStreamBySource: new Map([['wide-img', false]]),
+      fpsBySource: new Map(),
+    })
+    const cameraFilter = graph.filterParts.find((part) => part.includes('zoompan='))!
+    expect(cameraFilter).toContain('pad=')
+    expect(cameraFilter).not.toMatch(/crop=\d/)
+  })
+
+  it('renders export graph when stored dims differ from probed file dims', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stale-meta-'))
+    const image = join(dir, 'wide.png')
+    const out = join(dir, 'out.mp4')
+    try {
+      createStaticGridImage(image, WIDE_WIDTH, WIDE_HEIGHT)
+      const staleAsset = {
+        id: 'wide-stale',
+        file: new File([], 'wide.png', { type: 'image/png' }),
+        objectUrl: 'blob:test',
+        duration: 10,
+        fps: 0,
+        width: 1920,
+        height: 1080,
+        hasAudio: false,
+      }
+      let doc = addClipFromSource(createEmptyProject(), staleAsset)
+      const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0].id
+      doc = assignClipCameraStart(doc, clipId, TOP_LEFT_WIDE, 'Crop', 1920, 1080)
+      const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      track.clips[0] = {
+        ...track.clips[0]!,
+        effects: [
+          ...track.clips[0]!.effects,
+          {
+            type: 'red-box',
+            id: 'rb1',
+            rect: { x: 0.2, y: 0.3, width: 0.25, height: 0.2 },
+            strokeWidth: 4,
+            startOffset: 0,
+            endOffset: 5,
+          },
+        ],
+      }
+      const clip = track.clips[0]!
+      const graph = buildExportGraph({
+        doc,
+        clips: track.clips,
+        ttsClips: [],
+        inputIndexByVideoClipId: new Map([[clip.id, 0]]),
+        inputIndexByTtsClipId: new Map(),
+        mediaStore: new Map([['wide-stale', staleAsset]]),
+        mediaKindBySource: new Map([['wide-stale', classifyExportAsset(staleAsset)]]),
+        audioStreamBySource: new Map([['wide-stale', false]]),
+        fpsBySource: new Map(),
+        dimensionsBySource: new Map([
+          ['wide-stale', { width: WIDE_WIDTH, height: WIDE_HEIGHT }],
+        ]),
+      })
+      execSync(
+        `ffmpeg -y -loop 1 -i "${image}" -filter_complex "${graph.filterComplex}" -map "[outv]" ` +
+          `-t ${sampleDuration} -c:v libx264 -preset ultrafast "${out}"`,
+        { stdio: 'pipe' },
+      )
+      expect(existsSync(out)).toBe(true)
+      const probe = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${out}"`,
+      )
+        .toString()
+        .trim()
+      expect(probe).toBe(`${evenDim(WIDE_WIDTH)},${evenDim(WIDE_HEIGHT)}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

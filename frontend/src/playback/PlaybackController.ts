@@ -276,12 +276,14 @@ export class PlaybackController {
       const delta = (now - this.lastWallTime) / 1000
       this.lastWallTime = now
       const max = totalDuration(this.document)
-      const wallNext = this.timelineTime + delta
+      const prevTime = this.timelineTime
+      const wallNext = prevTime + delta
       const mediaNext = this.readMediaTimelineTime()
       let next = wallNext
       if (
         mediaNext != null &&
-        Math.abs(mediaNext - wallNext) <= MEDIA_CLOCK_STALE_THRESHOLD
+        Math.abs(mediaNext - wallNext) <= MEDIA_CLOCK_STALE_THRESHOLD &&
+        (mediaNext >= wallNext - 0.001 || mediaNext > prevTime + 0.001)
       ) {
         next = mediaNext
       }

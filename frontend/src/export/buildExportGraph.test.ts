@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { assignClipCameraStart } from '../camera/frameBankOps'
 import {
   createEmptyProject,
   addClipFromSource,
@@ -10,14 +11,25 @@ import type { MediaAsset, ProjectDocument, TimelineClip } from '../types/project
 import { MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   buildExportGraph,
+  buildAspectCorrectKenBurnsFilterChain,
+  buildCameraZoompanExpressions,
+  buildPadded169KenBurnsFilterChain,
+  cameraRectsUseUniformZoompan,
   clampBoxDimension,
   classifyExportAsset,
   clipUsesSourceAudio,
+  evenDimension,
   formatFfmpegError,
   parseAudioStreamFromLogs,
+  parseVideoDimensionsFromLogs,
   parseVideoFpsFromLogs,
+  resolveAspectCorrectIntermediateSize,
+  resolveClipFrameDimensions,
   resolveExportCanvas,
+  resolvePadded169Layout,
+  shouldApplyCameraFilter,
   stageFileNameForAsset,
+  transformRectToPadded169Space,
 } from './buildExportGraph'
 
 const FPS = 30
@@ -50,6 +62,7 @@ function buildFromDoc(
   options: {
     audioStreamBySource?: Record<string, boolean>
     fpsBySource?: Record<string, number>
+    dimensionsBySource?: Record<string, { width: number; height: number }>
     extraAssets?: MediaAsset[]
   } = {},
 ) {
@@ -96,6 +109,9 @@ function buildFromDoc(
   const fpsBySource = new Map(
     Object.entries(options.fpsBySource ?? {}),
   )
+  const dimensionsBySource = new Map(
+    Object.entries(options.dimensionsBySource ?? {}),
+  )
 
   return buildExportGraph({
     doc,
@@ -107,6 +123,7 @@ function buildFromDoc(
     mediaKindBySource,
     audioStreamBySource,
     fpsBySource,
+    dimensionsBySource,
   })
 }
 
@@ -387,6 +404,85 @@ describe('buildExportGraph', () => {
     expect(graph.filterComplex).toContain('[va0_1]')
   })
 
+  it('uses aspect-correct zoompan (not crop) for camera on non-16:9 image clips with red boxes', () => {
+    const imageAsset = mockAsset({
+      id: 'image-wide',
+      file: new File([], 'screenshot.png', { type: 'image/png' }),
+      width: 3456,
+      height: 2234,
+      fps: 0,
+      hasAudio: false,
+    })
+    let doc = docWithClip({}, imageAsset)
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+    doc = assignClipCameraStart(
+      doc,
+      clipId,
+      { x: 0, y: 0, width: 1, height: 0.87 },
+      'Crop',
+      imageAsset.width,
+      imageAsset.height,
+    )
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[0] = {
+      ...track.clips[0]!,
+      effects: [
+        ...track.clips[0]!.effects,
+        {
+          type: 'red-box',
+          id: 'rb1',
+          rect: { x: 0.2, y: 0.3, width: 0.25, height: 0.2 },
+          strokeWidth: 4,
+          startOffset: 0,
+          endOffset: 5,
+        },
+      ],
+    }
+
+    const graph = buildFromDoc(doc, {
+      audioStreamBySource: { 'image-wide': false },
+      extraAssets: [imageAsset],
+    })
+
+    const intermediate = resolveAspectCorrectIntermediateSize(2)
+    expect(graph.filterComplex).toContain('zoompan=')
+    expect(graph.filterComplex).toContain('pad=')
+    expect(graph.filterComplex).not.toMatch(/crop=\d/)
+    expect(graph.filterComplex).toContain('[v0]drawbox=')
+    const frameSize = resolveClipFrameDimensions(imageAsset)
+    expect(graph.filterComplex).toContain(
+      `drawbox=x=${Math.round(0.2 * frameSize.width)}:y=${Math.round(0.3 * frameSize.height)}:` +
+        `w=${clampBoxDimension(0.25 * frameSize.width)}:h=${clampBoxDimension(0.2 * frameSize.height)}:`,
+    )
+  })
+
+  it('keeps zoompan Ken Burns for 16:9 video with camera crop and red box', () => {
+    let doc = docWithClip({}, mockAsset({ id: 'video-16-9' }))
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+    doc = assignClipCameraStart(doc, clipId, { x: 0.1, y: 0.1, width: 0.5, height: 0.5 })
+    const track = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+    track.clips[0] = {
+      ...track.clips[0]!,
+      effects: [
+        ...track.clips[0]!.effects,
+        {
+          type: 'red-box',
+          id: 'rb1',
+          rect: { x: 0.25, y: 0.25, width: 0.3, height: 0.3 },
+          strokeWidth: 4,
+          startOffset: 0,
+          endOffset: 5,
+        },
+      ],
+    }
+
+    const graph = buildFromDoc(doc, { audioStreamBySource: { 'video-16-9': false } })
+
+    expect(graph.filterComplex).toContain('zoompan=')
+    expect(graph.filterComplex).toContain('[v0]drawbox=')
+    expect(graph.filterComplex).not.toMatch(/\[v0\].*crop=/)
+  })
+
   it('does not use :a on freeze-frame ffmpeg inputs when video has audio', () => {
     const videoAsset = mockAsset({ id: 'video-1', duration: 10 })
     const freezeAsset = mockAsset({
@@ -543,5 +639,145 @@ describe('export helpers', () => {
     expect(clampBoxDimension(0)).toBe(1)
     expect(clampBoxDimension(0.4)).toBe(1)
     expect(clampBoxDimension(12.6)).toBe(13)
+  })
+
+  it('detects uniform zoompan camera rects on 16:9 sources', () => {
+    expect(
+      cameraRectsUseUniformZoompan(
+        { x: 0.1, y: 0.1, width: 0.5625, height: 0.5625 },
+        { x: 0.2, y: 0.2, width: 0.4, height: 0.4 },
+      ),
+    ).toBe(true)
+    expect(
+      cameraRectsUseUniformZoompan(
+        { x: 0.1, y: 0.1, width: 0.5, height: 0.15 },
+        { x: 0.1, y: 0.1, width: 0.5, height: 0.15 },
+      ),
+    ).toBe(false)
+  })
+
+  it('resolves even clip frame dimensions for drawbox', () => {
+    expect(resolveClipFrameDimensions(mockAsset({ width: 1921, height: 1081 }))).toEqual({
+      width: evenDimension(1921),
+      height: evenDimension(1081),
+    })
+  })
+
+  it('builds padded 16:9 Ken Burns chain for non-uniform camera rects', () => {
+    const layout = resolvePadded169Layout(3456, 2234)
+    const paddedStart = transformRectToPadded169Space(
+      { x: 0, y: 0, width: 1, height: 0.87 },
+      layout,
+      evenDimension(3456),
+      evenDimension(2234),
+    )
+    const pan = buildCameraZoompanExpressions(paddedStart, paddedStart, 10)
+    const chain = buildPadded169KenBurnsFilterChain(
+      'vin',
+      'outv',
+      pan,
+      evenDimension(3456),
+      evenDimension(2234),
+      layout,
+    )
+    expect(Math.abs(paddedStart.width - paddedStart.height)).toBeLessThan(0.01)
+    expect(chain).toContain('pad=')
+    expect(chain).toContain(`scale=${evenDimension(3456)}:${evenDimension(2234)}`)
+    expect(chain).not.toMatch(/crop=\d/)
+  })
+
+  it('builds aspect-correct Ken Burns chain with 16:9 intermediate canvas', () => {
+    const pan = buildCameraZoompanExpressions(
+      { x: 0, y: 0, width: 0.9, height: 0.5 },
+      { x: 0, y: 0, width: 0.9, height: 0.5 },
+      10,
+    )
+    const chain = buildAspectCorrectKenBurnsFilterChain('vin', 'outv', pan, 3456, 2234)
+    const intermediate = resolveAspectCorrectIntermediateSize(2)
+    expect(chain).toContain(`s=${intermediate.width}x${intermediate.height}`)
+    expect(chain).toContain('scale=3456:2234')
+    expect(chain).not.toMatch(/crop=\d/)
+  })
+
+  it('uses probed dimensions for drawbox when stored metadata is stale', () => {
+    const staleAsset = mockAsset({
+      id: 'wide-stale',
+      file: new File([], 'screenshot.png', { type: 'image/png' }),
+      width: 1920,
+      height: 1080,
+      fps: 0,
+      hasAudio: false,
+    })
+    const doc = docWithClip(
+      {
+        sourceId: 'wide-stale',
+        effects: [
+          {
+            type: 'red-box',
+            id: 'rb1',
+            rect: { x: 0.2, y: 0.3, width: 0.25, height: 0.2 },
+            strokeWidth: 4,
+            startOffset: 0,
+            endOffset: 5,
+          },
+        ],
+      },
+      staleAsset,
+    )
+    const probed = { width: 3456, height: 2234 }
+    const graph = buildFromDoc(doc, {
+      audioStreamBySource: { 'wide-stale': false },
+      extraAssets: [staleAsset],
+      dimensionsBySource: { 'wide-stale': probed },
+    })
+    const frameSize = resolveClipFrameDimensions(staleAsset, probed)
+    expect(graph.filterComplex).toContain(
+      `drawbox=x=${Math.round(0.2 * frameSize.width)}:y=${Math.round(0.3 * frameSize.height)}:` +
+        `w=${clampBoxDimension(0.25 * frameSize.width)}:h=${clampBoxDimension(0.2 * frameSize.height)}:`,
+    )
+    expect(graph.filterComplex).not.toContain('drawbox=x=384:y=324')
+  })
+
+  it('defaults missing red-box stroke width in export graph', () => {
+    const doc = docWithClip({
+      effects: [
+        {
+          type: 'red-box',
+          id: 'rb1',
+          rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 },
+          strokeWidth: undefined as unknown as number,
+          startOffset: 0,
+          endOffset: 5,
+        },
+      ],
+    })
+    const graph = buildFromDoc(doc, { audioStreamBySource: { 'source-1': false } })
+    expect(graph.filterComplex).toContain(':t=4:')
+  })
+
+  it('skips camera filter when start and end rects are full frame', () => {
+    let doc = docWithClip({}, mockAsset({ id: 'video-1' }))
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+    doc = assignClipCameraStart(doc, clipId, { x: 0, y: 0, width: 1, height: 1 })
+    const clip = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!
+    expect(shouldApplyCameraFilter(doc, clip, 1920, 1080)).toBe(false)
+  })
+
+  it('parses video dimensions from ffmpeg probe logs', () => {
+    const dims = parseVideoDimensionsFromLogs([
+      'Input #0, image2, from wide.png:',
+      '  Duration: N/A, bitrate: N/A',
+      '  Stream #0:0: Video: png, rgb24, 3456x2234, 25 fps, 25 tbr, 25 tbn',
+    ])
+    expect(dims).toEqual({ width: 3456, height: 2234 })
+  })
+
+  it('includes clip index hint in ffmpeg error messages', () => {
+    const message = formatFfmpegError(
+      1,
+      ['Error reinitializing filters', 'Failed to inject frame into filter network: Invalid argument', 'stream #12:0'],
+      15,
+    )
+    expect(message).toContain('near timeline clip 13')
   })
 })

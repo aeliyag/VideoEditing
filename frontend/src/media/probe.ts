@@ -335,3 +335,24 @@ function probeVideoFile(file: File, options?: ProbeMediaOptions): Promise<MediaA
 export function revokeMediaAsset(asset: MediaAsset): void {
   URL.revokeObjectURL(asset.objectUrl)
 }
+
+/** Refresh metadata from the file while preserving id and objectUrl (saved-project load). */
+export async function reprobeMediaAsset(asset: MediaAsset): Promise<MediaAsset> {
+  const probed = await probeMediaFile(asset.file, { durationHint: asset.duration })
+  return {
+    ...asset,
+    duration: probed.duration > 0 ? probed.duration : asset.duration,
+    fps: probed.fps > 0 ? probed.fps : asset.fps,
+    width: probed.width > 0 ? probed.width : asset.width,
+    height: probed.height > 0 ? probed.height : asset.height,
+    hasAudio: probed.hasAudio,
+  }
+}
+
+export async function reprobeMediaStore(store: Map<string, MediaAsset>): Promise<Map<string, MediaAsset>> {
+  const next = new Map<string, MediaAsset>()
+  for (const [id, asset] of store) {
+    next.set(id, await reprobeMediaAsset(asset))
+  }
+  return next
+}

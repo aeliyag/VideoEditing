@@ -5,9 +5,11 @@ import { isRedBoxEffect, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import { clipDuration, getVideoTrack, MIN_CLIP_DURATION } from '../timeline/helpers'
 
 /** Default length for a newly created red-box annotation (seconds). */
-export const DEFAULT_RED_BOX_DURATION = 15
+export const DEFAULT_RED_BOX_DURATION = 5
 
-function clampAnnotationRect(rect: FrameRect): FrameRect {
+export const DEFAULT_RED_BOX_STROKE_WIDTH = 4
+
+export function clampRedBoxRect(rect: FrameRect): FrameRect {
   const width = Math.max(0.02, Math.min(1, rect.width))
   const height = Math.max(0.02, Math.min(1, rect.height))
   return {
@@ -52,7 +54,7 @@ export function addClipRedBox(
   const redBox: RedBoxEffect = {
     type: 'red-box',
     id: uuidv4(),
-    rect: clampAnnotationRect(rect),
+    rect: clampRedBoxRect(rect),
     strokeWidth: 4,
     startOffset,
     endOffset,
@@ -98,7 +100,7 @@ export function updateClipRedBox(
                     ...clip,
                     effects: clip.effects.map((effect) =>
                       isRedBoxEffect(effect) && effect.id === effectId
-                        ? { ...effect, rect: clampAnnotationRect(rect) }
+                        ? { ...effect, rect: clampRedBoxRect(rect) }
                         : effect,
                     ),
                   }

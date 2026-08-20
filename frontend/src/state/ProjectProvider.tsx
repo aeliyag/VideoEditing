@@ -22,11 +22,12 @@ import {
   FrameCaptureError,
   loadCaptureVideoSource,
 } from '../media/captureFrame'
-import { probeMediaFile, revokeMediaAsset } from '../media/probe'
+import { probeMediaFile, reprobeMediaStore, revokeMediaAsset } from '../media/probe'
 import { inferMaterialKind, probeFileAsMaterial } from '../media/materialHelpers'
 import { playbackController } from '../playback/PlaybackController'
 import type { MaterialKind, MaterialOrigin, MediaAsset, MediaStore, TtsGeneration } from '../types/project'
 import { clipAtTime, getVideoTrack, sortedClips, totalDuration } from '../timeline/helpers'
+import { migrateLoadedProject } from '../timeline/migrateProject'
 import {
   isVideoClipAtPlayhead,
   sourceTimeAtPlayhead,
@@ -836,13 +837,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       }
       playbackController.pause()
       clearMediaStore(mediaStoreRef.current)
-      setMediaStore(loaded.mediaStore)
+      const reprobedMediaStore = await reprobeMediaStore(loaded.mediaStore)
+      setMediaStore(reprobedMediaStore)
       historyRef.current = createHistoryStacks()
       setHistoryTick((n) => n + 1)
 
-      let document = loaded.document
+      let document = migrateLoadedProject(loaded.document, reprobedMediaStore)
       if (!document.materials?.length) {
-        const materials = Array.from(loaded.mediaStore.values()).map((asset) => ({
+        const materials = Array.from(reprobedMediaStore.values()).map((asset) => ({
           id: asset.id,
           name: asset.file.name,
           kind: inferMaterialKind(asset.file, asset),

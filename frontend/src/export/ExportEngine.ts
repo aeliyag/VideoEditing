@@ -6,8 +6,10 @@ import {
   classifyExportAsset,
   formatFfmpegError,
   parseAudioStreamFromLogs,
+  parseVideoDimensionsFromLogs,
   parseVideoFpsFromLogs,
   stageFileNameForAsset,
+  type ExportFrameDimensions,
 } from './buildExportGraph'
 import { collectAllElements } from '../elements/elementOps'
 import { rasterizeElement } from '../elements/rasterizeElement'
@@ -47,7 +49,7 @@ async function getFfmpeg(onLog?: (message: string) => void): Promise<FFmpeg> {
 async function probeStagedVideoStream(
   ffmpeg: FFmpeg,
   filename: string,
-): Promise<{ hasAudio: boolean; fps: number | null }> {
+): Promise<{ hasAudio: boolean; fps: number | null; dimensions: ExportFrameDimensions | null }> {
   const logs: string[] = []
   const onLog = ({ message }: { message: string }) => {
     logs.push(message)
@@ -63,6 +65,7 @@ async function probeStagedVideoStream(
   return {
     hasAudio: parseAudioStreamFromLogs(logs),
     fps: parseVideoFpsFromLogs(logs),
+    dimensions: parseVideoDimensionsFromLogs(logs),
   }
 }
 
@@ -159,6 +162,7 @@ export async function exportProjectToMp4(
   const mediaKindBySource = new Map<string, ReturnType<typeof classifyExportAsset>>()
   const audioStreamBySource = new Map<string, boolean>()
   const fpsBySource = new Map<string, number>()
+  const dimensionsBySource = new Map<string, ExportFrameDimensions>()
   const stagedNameBySourceId = new Map<string, string>()
   const outputName = 'output.mp4'
 
@@ -181,11 +185,14 @@ export async function exportProjectToMp4(
     stagedNameBySourceId.set(sourceId, name)
     mediaKindBySource.set(sourceId, kind)
 
-    if (kind === 'video') {
-      const { hasAudio, fps } = await probeStagedVideoStream(ffmpeg, name)
-      audioStreamBySource.set(sourceId, hasAudio)
+    if (kind === 'video' || kind === 'image') {
+      const { hasAudio, fps, dimensions } = await probeStagedVideoStream(ffmpeg, name)
+      audioStreamBySource.set(sourceId, kind === 'video' ? hasAudio : false)
       if (fps != null) {
         fpsBySource.set(sourceId, fps)
+      }
+      if (dimensions) {
+        dimensionsBySource.set(sourceId, dimensions)
       }
     } else if (kind === 'audio') {
       audioStreamBySource.set(sourceId, true)
@@ -205,10 +212,15 @@ export async function exportProjectToMp4(
     if (!asset) {
       throw new Error('Missing clip media for element export.')
     }
+    const frameDims =
+      dimensionsBySource.get(ownerClip!.sourceId) ?? {
+        width: asset.width,
+        height: asset.height,
+      }
     const pngBlob = await rasterizeElement(
       element,
-      asset.width,
-      asset.height,
+      frameDims.width,
+      frameDims.height,
       mediaStore,
     )
     const name = `element_${i}.png`
@@ -241,6 +253,7 @@ export async function exportProjectToMp4(
     audioStreamByInputIndex,
     fpsBySource,
     inputIndexByElementId,
+    dimensionsBySource,
   })
 
   // One ffmpeg input slot per timeline clip. Repeat `-i` for the same staged file
@@ -298,7 +311,7 @@ export async function exportProjectToMp4(
 
   const exitCode = await ffmpeg.exec(args)
   if (exitCode !== 0) {
-    throw new Error(formatFfmpegError(exitCode, execLogs))
+    throw new Error(formatFfmpegError(exitCode, execLogs, clips.length))
   }
 
   onProgress?.(0.98, 'Finalizing…')

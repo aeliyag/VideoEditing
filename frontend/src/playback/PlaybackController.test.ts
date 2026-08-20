@@ -309,6 +309,60 @@ describe('PlaybackController seek-then-play', () => {
     expect(controller.getTimelineTime()).toBeCloseTo(0.08, 2)
   })
 
+  it('advances playhead on wall clock when audio has not started ticking yet', async () => {
+    const doc = docWithAudioClip()
+    const asset = mockAudioAsset()
+    const mediaStore = new Map([[asset.id, asset]])
+    const audio = createDeferredSeekMedia('audio') as HTMLAudioElement
+
+    controller.setProject(doc, mediaStore)
+    controller.setAudioElement(audio)
+    controller.seek(0)
+    await flushMicrotasks()
+
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    controller.play()
+    await vi.waitFor(() => {
+      expect(rafCallback).not.toBeNull()
+    })
+
+    Object.defineProperty(audio, 'currentTime', {
+      get: () => 0,
+      configurable: true,
+    })
+    nowSpy.mockReturnValue(1_016)
+    rafCallback!(1_016)
+
+    expect(controller.getTimelineTime()).toBeCloseTo(0.016, 3)
+  })
+
+  it('advances playhead on wall clock when video has not started ticking yet', async () => {
+    const doc = docWithVideoClip()
+    const asset = mockAsset()
+    const mediaStore = new Map([[asset.id, asset]])
+    const video = createDeferredSeekMedia('video') as HTMLVideoElement
+
+    controller.setProject(doc, mediaStore)
+    controller.setVideoElement(video)
+    controller.seek(0)
+    await flushMicrotasks()
+
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+    controller.play()
+    await vi.waitFor(() => {
+      expect(rafCallback).not.toBeNull()
+    })
+
+    Object.defineProperty(video, 'currentTime', {
+      get: () => 0,
+      configurable: true,
+    })
+    nowSpy.mockReturnValue(1_016)
+    rafCallback!(1_016)
+
+    expect(controller.getTimelineTime()).toBeCloseTo(0.016, 3)
+  })
+
   it('keeps the playhead on the audio clock when there is no video', async () => {
     const doc = docWithAudioClip()
     const asset = mockAudioAsset()

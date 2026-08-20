@@ -6,6 +6,7 @@ import type { MediaAsset } from '../types/project'
 import { MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   addClipRedBox,
+  DEFAULT_RED_BOX_DURATION,
   moveClipRedBox,
   removeClipRedBox,
   trimClipRedBox,
@@ -27,6 +28,22 @@ function mockAsset(overrides: Partial<MediaAsset> = {}): MediaAsset {
 }
 
 describe('redBoxOps', () => {
+  it('defaults new red boxes to five seconds from the playhead', () => {
+    const asset = mockAsset()
+    let doc = createEmptyProject()
+    doc = addClipFromSource(doc, asset, 0)
+    const clipId = doc.tracks.find((t) => t.id === MAIN_VIDEO_TRACK_ID)!.clips[0]!.id
+
+    doc = addClipRedBox(doc, clipId, { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, 0)!.document
+
+    const box = doc.tracks
+      .find((t) => t.id === MAIN_VIDEO_TRACK_ID)!
+      .clips[0]!.effects.find((effect) => effect.type === 'red-box')!
+    expect(DEFAULT_RED_BOX_DURATION).toBe(5)
+    expect(box.startOffset).toBeCloseTo(0)
+    expect(box.endOffset).toBeCloseTo(5)
+  })
+
   it('adds multiple red boxes without replacing existing ones', () => {
     const asset = mockAsset()
     let doc = createEmptyProject()
