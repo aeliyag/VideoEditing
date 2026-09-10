@@ -62,9 +62,7 @@ function copyEffectsForFreezeClip(
         startOffset: 0,
         endOffset: Math.min(effect.endOffset - localOffset, freezeDuration),
       })
-      continue
     }
-    next.push({ ...effect })
   }
   return next
 }

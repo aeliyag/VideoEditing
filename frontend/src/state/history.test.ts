@@ -40,7 +40,12 @@ describe('editor history', () => {
     const beforeState = {
       ...createInitialState(),
       document: doc,
-      ui: { playhead: 4, selectedClipId: doc.tracks[0]!.clips[0]!.id, isPlaying: false },
+      ui: {
+        ...createInitialState().ui,
+        playhead: 4,
+        selectedClipId: doc.tracks[0]!.clips[0]!.id,
+        isPlaying: false,
+      },
     }
     const mediaStore: MediaStore = new Map([['video-1', mockAsset('video-1')]])
     const freezeAsset = mockAsset('freeze-1')

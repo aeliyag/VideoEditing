@@ -444,7 +444,6 @@ describe('buildExportGraph', () => {
       extraAssets: [imageAsset],
     })
 
-    const intermediate = resolveAspectCorrectIntermediateSize(2)
     expect(graph.filterComplex).toContain('zoompan=')
     expect(graph.filterComplex).toContain('pad=')
     expect(graph.filterComplex).not.toMatch(/crop=\d/)
@@ -644,14 +643,14 @@ describe('export helpers', () => {
   it('detects uniform zoompan camera rects on 16:9 sources', () => {
     expect(
       cameraRectsUseUniformZoompan(
-        { x: 0.1, y: 0.1, width: 0.5625, height: 0.5625 },
-        { x: 0.2, y: 0.2, width: 0.4, height: 0.4 },
+        { width: 0.5625, height: 0.5625 },
+        { width: 0.4, height: 0.4 },
       ),
     ).toBe(true)
     expect(
       cameraRectsUseUniformZoompan(
-        { x: 0.1, y: 0.1, width: 0.5, height: 0.15 },
-        { x: 0.1, y: 0.1, width: 0.5, height: 0.15 },
+        { width: 0.5, height: 0.15 },
+        { width: 0.5, height: 0.15 },
       ),
     ).toBe(false)
   })

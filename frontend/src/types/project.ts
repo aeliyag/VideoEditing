@@ -99,11 +99,19 @@ export interface ShapeElementEffect extends ElementEffectBase {
 
 export type ElementEffect = ImageElementEffect | TextElementEffect | ShapeElementEffect
 
-export type Effect =
-  | CameraEffect
-  | RedBoxEffect
-  | ElementEffect
-  | { type: string; [key: string]: unknown }
+/** Omit that keeps discriminated-union members instead of collapsing to shared keys. */
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K>
+  : never
+
+export type ElementDraft = DistributiveOmit<
+  ElementEffect,
+  'type' | 'id' | 'z' | 'startOffset' | 'endOffset'
+>
+
+export type ElementPatch = Partial<DistributiveOmit<ElementEffect, 'type' | 'id'>>
+
+export type Effect = CameraEffect | RedBoxEffect | ElementEffect
 
 export interface TimelineClip {
   id: string

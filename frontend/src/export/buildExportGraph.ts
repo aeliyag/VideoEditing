@@ -569,7 +569,7 @@ function buildVideoTrimFilter(
 
 export function clipUsesSourceAudio(
   clip: TimelineClip,
-  asset: MediaAsset,
+  _asset: MediaAsset,
   kind: ExportMediaKind,
   audioStreamBySource: ReadonlyMap<string, boolean>,
   inputIndex?: number,

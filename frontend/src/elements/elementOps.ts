@@ -1,7 +1,9 @@
 import { v4 as uuidv4 } from 'uuid'
 
 import type {
+  ElementDraft,
   ElementEffect,
+  ElementPatch,
   FrameRect,
   ProjectDocument,
   TimelineClip,
@@ -99,7 +101,7 @@ export function visibleElementsAtOffset(
 export function addClipElement(
   doc: ProjectDocument,
   clipId: string,
-  element: Omit<ElementEffect, 'type' | 'id' | 'z' | 'startOffset' | 'endOffset'>,
+  element: ElementDraft,
   timelinePlayhead?: number,
 ): { document: ProjectDocument; effectId: string } | null {
   const track = getVideoTrack(doc)
@@ -146,7 +148,7 @@ export function updateClipElement(
   doc: ProjectDocument,
   clipId: string,
   elementId: string,
-  patch: Partial<Omit<ElementEffect, 'type' | 'id'>>,
+  patch: ElementPatch,
 ): ProjectDocument {
   return {
     ...doc,
@@ -162,10 +164,11 @@ export function updateClipElement(
                       if (!isElementEffect(effect) || effect.id !== elementId) {
                         return effect
                       }
-                      const updated = { ...effect, ...patch }
-                      if (patch.rect) {
-                        updated.rect = clampElementRect(patch.rect)
-                      }
+                      const updated = {
+                        ...effect,
+                        ...patch,
+                        rect: patch.rect ? clampElementRect(patch.rect) : effect.rect,
+                      } as ElementEffect
                       return updated
                     }),
                   }

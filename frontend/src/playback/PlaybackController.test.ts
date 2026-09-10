@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MediaAsset, ProjectDocument } from '../types/project'
-import { MAIN_AUDIO_TRACK_ID, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import {
   addAudioClipFromSource,
   addClipFromSource,
@@ -437,7 +436,8 @@ describe('PlaybackController seek-then-play', () => {
     expect(audio.play).not.toHaveBeenCalled()
     expect(rafCallback).toBeNull()
 
-    pendingSeeked?.()
+    expect(pendingSeeked).toEqual(expect.any(Function))
+    pendingSeeked!()
     await vi.waitFor(() => {
       expect(rafCallback).not.toBeNull()
     })

@@ -9,7 +9,7 @@ export function minClipDuration(fps: number): number {
   return Math.max(MIN_CLIP_DURATION, oneFrame)
 }
 
-export function clipDuration(clip: TimelineClip): number {
+export function clipDuration(clip: { sourceStart: number; sourceEnd: number }): number {
   return Math.max(0, clip.sourceEnd - clip.sourceStart)
 }
 

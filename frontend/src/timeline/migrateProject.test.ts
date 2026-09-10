@@ -5,7 +5,7 @@ import { assignClipCameraStart } from '../camera/frameBankOps'
 import { DEFAULT_RED_BOX_STROKE_WIDTH } from '../camera/redBoxOps'
 import { addClipFromSource, createEmptyProject } from './operations'
 import { migrateLoadedProject } from './migrateProject'
-import type { MediaAsset, ProjectDocument } from '../types/project'
+import type { MediaAsset } from '../types/project'
 import { MAIN_VIDEO_TRACK_ID } from '../types/project'
 
 function mockAsset(overrides: Partial<MediaAsset> = {}): MediaAsset {

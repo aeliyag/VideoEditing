@@ -13,7 +13,6 @@ import {
   DEFAULT_KEN_BURNS_OPTIONS,
   EXPORT_FPS,
   type KenBurnsRenderOptions,
-  buildAspectCorrectKenBurnsFilterChain,
   buildCameraZoompanExpressions,
   buildExportGraph,
   buildKenBurnsFilterChain,
@@ -23,7 +22,6 @@ import {
   computeCameraLastFrame,
   evalCameraRectAtFrame,
   measureZoompanCoordinateStalls,
-  resolveAspectCorrectIntermediateSize,
   resolveClipFrameDimensions,
   resolvePadded169Layout,
   transformRectToPadded169Space,
@@ -91,7 +89,7 @@ function buildAspectCorrectGraph(
   return `${input}${chain}`
 }
 
-function readFrameRgb(path: string, width: number, height: number): Buffer {
+function readFrameRgb(path: string, _width: number, _height: number): Buffer {
   const rawPath = `${path}.rgb`
   execSync(
     `ffmpeg -y -loglevel error -i "${path}" -frames:v 1 -f rawvideo -pix_fmt rgb24 "${rawPath}"`,

@@ -7,7 +7,8 @@ import type {
   MaterialKind,
   MaterialOrigin,
   TtsGeneration,
-  ElementEffect,
+  ElementDraft,
+  ElementPatch,
 } from '../types/project'
 import { isElementEffect } from '../types/project'
 import {
@@ -114,14 +115,14 @@ export type ProjectAction =
   | {
       type: 'ADD_CLIP_ELEMENT'
       clipId: string
-      element: Omit<ElementEffect, 'type' | 'id' | 'z' | 'startOffset' | 'endOffset'>
+      element: ElementDraft
       timelinePlayhead?: number
     }
   | {
       type: 'UPDATE_CLIP_ELEMENT'
       clipId: string
       elementId: string
-      patch: Partial<Omit<ElementEffect, 'type' | 'id'>>
+      patch: ElementPatch
     }
   | { type: 'REMOVE_CLIP_ELEMENT'; clipId: string; elementId: string }
   | {

@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from 'react'
 import { ELEMENT_FONT_OPTIONS } from '../elements/elementStyle'
 import { clipElements } from './ElementsLayer'
 import { useProject } from '../state/ProjectProvider'
-import type { ElementEffect, TextElementEffect } from '../types/project'
+import type { ElementDraft, ElementEffect, ElementPatch, TextElementEffect } from '../types/project'
 import { isElementEffect } from '../types/project'
 import { findClipById } from '../timeline/helpers'
 
@@ -14,10 +14,7 @@ const DEFAULT_ELEMENT_RECT = {
   height: 0.2,
 }
 
-function defaultTextElement(): Omit<
-  ElementEffect,
-  'id' | 'z' | 'startOffset' | 'endOffset' | 'type'
-> {
+function defaultTextElement(): ElementDraft {
   return {
     kind: 'text',
     rect: { ...DEFAULT_ELEMENT_RECT },
@@ -32,10 +29,7 @@ function defaultTextElement(): Omit<
   }
 }
 
-function defaultShapeElement(shape: 'rect' | 'ellipse'): Omit<
-  ElementEffect,
-  'id' | 'z' | 'startOffset' | 'endOffset' | 'type'
-> {
+function defaultShapeElement(shape: 'rect' | 'ellipse'): ElementDraft {
   return {
     kind: 'shape',
     shape,
@@ -93,7 +87,7 @@ export function ElementsPanel() {
   const imageMaterials = (state.document.materials ?? []).filter((m) => m.kind === 'image')
 
   const addElement = (
-    element: Omit<ElementEffect, 'id' | 'z' | 'startOffset' | 'endOffset' | 'type'>,
+    element: ElementDraft,
   ) => {
     if (!selectedClip) {
       return
@@ -107,7 +101,7 @@ export function ElementsPanel() {
     })
   }
 
-  const updateSelected = (patch: Partial<Omit<ElementEffect, 'type' | 'id'>>) => {
+  const updateSelected = (patch: ElementPatch) => {
     if (!selectedClip || !selectedElement) {
       return
     }

@@ -63,19 +63,24 @@ export function ElementsLayer({
   const editable = elementsPanelOpen
 
   const handleRectChange = (element: ElementEffect, nextRect: FrameRect) => {
-    const patch: Partial<ElementEffect> = { rect: nextRect }
-    if (element.kind === 'text' && resizeStartRef.current?.element.id === element.id) {
-      const { height, element: startElement } = resizeStartRef.current
-      if (height > 0) {
-        const scale = nextRect.height / height
-        patch.fontScale = Math.max(0.01, startElement.fontScale * scale)
-      }
-    }
+    const fontScale =
+      element.kind === 'text' && resizeStartRef.current?.element.id === element.id
+        ? (() => {
+            const { height, element: startElement } = resizeStartRef.current
+            if (height > 0) {
+              return Math.max(0.01, startElement.fontScale * (nextRect.height / height))
+            }
+            return undefined
+          })()
+        : undefined
     dispatch({
       type: 'UPDATE_CLIP_ELEMENT',
       clipId: clip.id,
       elementId: element.id,
-      patch,
+      patch:
+        fontScale === undefined
+          ? { rect: nextRect }
+          : { rect: nextRect, fontScale },
     })
   }
 

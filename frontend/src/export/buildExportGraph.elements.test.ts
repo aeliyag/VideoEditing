@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createEmptyProject, addClipFromSource } from '../timeline/operations'
 import type { MediaAsset, ProjectDocument, TimelineClip } from '../types/project'
-import { MAIN_VIDEO_TRACK_ID } from '../types/project'
+import { isElementEffect, MAIN_VIDEO_TRACK_ID } from '../types/project'
 import { buildExportGraph, classifyExportAsset } from './buildExportGraph'
 
 const FPS = 30
@@ -43,7 +43,7 @@ function buildFromDoc(doc: ProjectDocument, elementInputStart = 1) {
   const inputIndexByVideoClipId = new Map(videoClips.map((clip, index) => [clip.id, index]))
   const inputIndexByTtsClipId = new Map<string, number>()
   const inputIndexByElementId = new Map<string, number>()
-  const elements = videoClips[0]?.effects.filter((effect) => effect.type === 'element') ?? []
+  const elements = videoClips[0]?.effects.filter(isElementEffect) ?? []
   elements.forEach((element, index) => {
     inputIndexByElementId.set(element.id, elementInputStart + index)
   })
