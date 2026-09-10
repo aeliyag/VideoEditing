@@ -3,10 +3,11 @@ import { useEffect, useState } from 'react'
 import { fetchAkoolVoices } from '../akool/client'
 import {
   akoolKeyHint,
-  clearUserAkoolApiKey,
+  deleteAkoolApiKeyFromAccount,
   getUserAkoolApiKey,
   getUserAkoolApiKeyHint,
   hasUserAkoolApiKey,
+  saveAkoolApiKeyToAccount,
   setUserAkoolApiKey,
   subscribeAkoolKeyChange,
   subscribeOpenSettings,
@@ -44,13 +45,24 @@ export function SettingsPanel() {
     setUserAkoolApiKey(nextKey)
     try {
       await fetchAkoolVoices()
-      setKeyInput('')
-      setStatus(`Connected (${akoolKeyHint(nextKey)})`)
+      try {
+        await saveAkoolApiKeyToAccount(nextKey)
+        setKeyInput('')
+        setStatus(`Saved to your account (${akoolKeyHint(nextKey)})`)
+      } catch (saveErr) {
+        setKeyInput('')
+        setStatus(`Connected (${akoolKeyHint(nextKey)})`)
+        setError(
+          saveErr instanceof Error
+            ? `Key works, but could not save to your account: ${saveErr.message}`
+            : 'Key works, but could not save to your account.',
+        )
+      }
     } catch (err) {
       if (previousKey) {
         setUserAkoolApiKey(previousKey)
       } else {
-        clearUserAkoolApiKey()
+        await deleteAkoolApiKeyFromAccount().catch(() => undefined)
       }
       setError(err instanceof Error ? err.message : 'Could not validate that API key.')
       setStatus('')
@@ -59,11 +71,18 @@ export function SettingsPanel() {
     }
   }
 
-  const onDisconnect = () => {
-    clearUserAkoolApiKey()
-    setKeyInput('')
-    setStatus('Disconnected. AI tools will use your key only after you connect again.')
+  const onDisconnect = async () => {
+    setBusy(true)
     setError('')
+    try {
+      await deleteAkoolApiKeyFromAccount()
+      setKeyInput('')
+      setStatus('Removed from your account. Connect again to use AI tools.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove that API key.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -81,7 +100,7 @@ export function SettingsPanel() {
           <h3 className="frame-bank-title">Akool API</h3>
           <p className="crop-panel-hint">
             Connect <strong>your</strong> Akool key so generations bill your account, not
-            the app owner. The key stays in this browser.{' '}
+            the app owner. The key is saved to your signed-in account.{' '}
             <a href="https://akool.com" target="_blank" rel="noreferrer">
               Get a key
             </a>{' '}
@@ -117,7 +136,7 @@ export function SettingsPanel() {
                 type="button"
                 className="btn btn-small"
                 disabled={busy}
-                onClick={onDisconnect}
+                onClick={() => void onDisconnect()}
               >
                 Disconnect
               </button>

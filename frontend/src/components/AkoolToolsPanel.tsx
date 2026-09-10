@@ -281,7 +281,7 @@ export function AkoolToolsPanel() {
             <div className="akool-connect-banner">
               <p className="crop-panel-hint">
                 Connect your own Akool API key to use text-to-speech, image generation,
-                and image-to-video. Your key is stored in this browser only.
+                and image-to-video. The key is saved to your account.
               </p>
               <button
                 type="button"

@@ -15,6 +15,7 @@ import {
   parseSignUpResult,
   type SignUpResult,
 } from '../lib/authHelpers'
+import { loadAkoolApiKeyFromAccount, clearUserAkoolApiKey } from '../akool/userKey'
 import { supabase } from '../lib/supabase'
 
 export type { SignUpResult }
@@ -46,6 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (mounted) {
         setSession(data.session)
         setLoading(false)
+        if (data.session?.user) {
+          void loadAkoolApiKeyFromAccount()
+        }
       }
     })
 
@@ -54,6 +58,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
       setLoading(false)
+      if (nextSession?.user) {
+        void loadAkoolApiKeyFromAccount()
+      } else {
+        clearUserAkoolApiKey()
+      }
     })
 
     return () => {

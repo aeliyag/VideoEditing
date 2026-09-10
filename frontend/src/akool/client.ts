@@ -1,4 +1,5 @@
 import { getAccessToken } from '../lib/supabase'
+import { resolveAkoolApiBase } from './apiBase'
 import { getUserAkoolApiKey } from './userKey'
 
 export interface AkoolVoice {
@@ -26,9 +27,11 @@ export interface AkoolImageToVideoParams {
   audioType?: number
 }
 
-const AKOOL_API_BASE =
-  (import.meta.env.VITE_AKOOL_API_BASE as string | undefined)?.replace(/\/$/, '') ??
-  '/api/akool'
+const AKOOL_API_BASE = resolveAkoolApiBase({
+  VITE_AKOOL_API_BASE: import.meta.env.VITE_AKOOL_API_BASE,
+  VITE_SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
+  DEV: import.meta.env.DEV,
+})
 
 async function authHeaders(json = false): Promise<HeadersInit> {
   const token = await getAccessToken()
@@ -39,9 +42,11 @@ async function authHeaders(json = false): Promise<HeadersInit> {
   if (!apiKey) {
     throw new Error('Connect your Akool API key in Settings to use AI tools.')
   }
+  const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim()
   return {
     Authorization: `Bearer ${token}`,
     'x-akool-api-key': apiKey,
+    ...(anonKey && !AKOOL_API_BASE.startsWith('/api/akool') ? { apikey: anonKey } : {}),
     ...(json ? { 'Content-Type': 'application/json' } : {}),
   }
 }
