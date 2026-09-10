@@ -1,4 +1,5 @@
 import { getAccessToken } from '../lib/supabase'
+import { getUserAkoolApiKey } from './userKey'
 
 export interface AkoolVoice {
   voiceId: string
@@ -34,8 +35,13 @@ async function authHeaders(json = false): Promise<HeadersInit> {
   if (!token) {
     throw new Error('Sign in required to use Akool features.')
   }
+  const apiKey = getUserAkoolApiKey()
+  if (!apiKey) {
+    throw new Error('Connect your Akool API key in Settings to use AI tools.')
+  }
   return {
     Authorization: `Bearer ${token}`,
+    'x-akool-api-key': apiKey,
     ...(json ? { 'Content-Type': 'application/json' } : {}),
   }
 }

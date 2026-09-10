@@ -4,6 +4,7 @@ import { importDebug } from '../debug/importDebug'
 import { playbackController } from '../playback/PlaybackController'
 import { AkoolToolsPanel } from './AkoolToolsPanel'
 import { AkoolRecordingPanel } from './AkoolRecordingPanel'
+import { SettingsPanel } from './SettingsPanel'
 import { useAuth } from '../state/AuthProvider'
 import { useProject } from '../state/ProjectProvider'
 import { getVideoTrack, isAudioClipId, resolveDeleteClipId, sortedClips } from '../timeline/helpers'
@@ -131,6 +132,7 @@ export function Toolbar() {
         {activeSaveId && <span className="project-save-badge">Saved version</span>}
         <div className="toolbar-user">
           <span className="toolbar-user-email">{user?.email}</span>
+          <SettingsPanel />
           <button type="button" className="btn btn-small" onClick={() => void signOut()}>
             Sign out
           </button>
@@ -269,13 +271,15 @@ export function Toolbar() {
         <div className="project-library">
           <h3 className="frame-bank-title">Saved timelines</h3>
           <p className="crop-panel-hint">
-            <strong>Save</strong> updates the linked timeline in place.{' '}
-            <strong>Save as…</strong> creates a new library entry.
+            Timelines stay <strong>on this device</strong> — media is not uploaded to
+            cloud storage. <strong>Save</strong> updates the linked timeline in place.{' '}
+            <strong>Save as…</strong> creates a new library entry and reuses media
+            already stored here.
           </p>
           {savedProjects.length === 0 ? (
             <p className="crop-panel-hint">
-              No saved versions yet. Use Save or Save as… to keep a timeline (video
-              included).
+              No saved versions yet. Use Save or Save as… to keep a timeline on this
+              browser.
             </p>
           ) : (
             <ul className="project-library-list">

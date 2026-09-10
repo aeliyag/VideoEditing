@@ -5,7 +5,8 @@ const AKOOL_ORIGIN = 'https://openapi.akool.com'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-akool-api-key',
 }
 
 interface AkoolEnvelope<T> {
@@ -127,9 +128,11 @@ Deno.serve(async (req: Request) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  const apiKey = Deno.env.get('AKOOL_API_KEY')
-  if (!apiKey?.trim()) {
-    return jsonResponse(503, { error: 'AKOOL_API_KEY secret is not configured.' })
+  const apiKey = req.headers.get('x-akool-api-key')?.trim()
+  if (!apiKey) {
+    return jsonResponse(400, {
+      error: 'Connect your Akool API key in Settings to use AI tools.',
+    })
   }
 
   const authHeader = req.headers.get('Authorization')

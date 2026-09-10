@@ -56,7 +56,6 @@ interface Image2VideoResultsData {
 }
 
 interface AkoolProxyOptions {
-  apiKey: string | undefined
   supabaseUrl: string | undefined
   supabaseAnonKey: string | undefined
 }
@@ -159,8 +158,14 @@ async function pollTtsUrl(apiKey: string, audioModelId: string): Promise<string>
   throw new Error('Akool TTS timed out')
 }
 
+function readUserAkoolKey(req: IncomingMessage): string {
+  const raw = req.headers['x-akool-api-key']
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return value?.trim() ?? ''
+}
+
 export function akoolProxyPlugin(options: AkoolProxyOptions): Plugin {
-  const { apiKey, supabaseUrl, supabaseAnonKey } = options
+  const { supabaseUrl, supabaseAnonKey } = options
 
   return {
     name: 'akool-proxy',
@@ -190,9 +195,10 @@ export function akoolProxyPlugin(options: AkoolProxyOptions): Plugin {
           return
         }
 
-        if (!apiKey?.trim()) {
-          sendJson(res, 503, {
-            error: 'AKOOL_API_KEY is not set. Add it to frontend/.env (see .env.example).',
+        const apiKey = readUserAkoolKey(req)
+        if (!apiKey) {
+          sendJson(res, 400, {
+            error: 'Connect your Akool API key in Settings to use AI tools.',
           })
           return
         }

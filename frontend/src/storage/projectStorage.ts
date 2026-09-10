@@ -1,6 +1,6 @@
 import type { MediaStore, ProjectDocument } from '../types/project'
 import type { SavedProjectMeta } from './projectLibrary'
-import * as cloud from './cloudProjectLibrary'
+import * as local from './projectLibrary'
 
 export type { SavedProjectMeta } from './projectLibrary'
 
@@ -12,7 +12,7 @@ function requireUserId(userId: string | null): string {
 }
 
 export async function listSavedProjects(userId: string | null): Promise<SavedProjectMeta[]> {
-  return cloud.listSavedProjects(requireUserId(userId))
+  return local.listSavedProjects(requireUserId(userId))
 }
 
 export async function saveProjectVersion(
@@ -27,7 +27,10 @@ export async function saveProjectVersion(
     forceUploadMediaIds?: ReadonlySet<string>
   },
 ): Promise<SavedProjectMeta> {
-  return cloud.saveProjectVersion(requireUserId(userId), args)
+  return local.saveProjectVersion({
+    ...args,
+    userId: requireUserId(userId),
+  })
 }
 
 export async function loadProjectVersion(
@@ -40,9 +43,9 @@ export async function loadProjectVersion(
   selectedClipId: string | null
   name: string
 } | null> {
-  return cloud.loadProjectVersion(requireUserId(userId), id)
+  return local.loadProjectVersion(requireUserId(userId), id)
 }
 
 export async function deleteProjectVersion(userId: string | null, id: string): Promise<void> {
-  return cloud.deleteProjectVersion(requireUserId(userId), id)
+  return local.deleteProjectVersion(requireUserId(userId), id)
 }

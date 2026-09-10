@@ -783,7 +783,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           elementCount > 0
             ? ` (${elementCount} element${elementCount === 1 ? '' : 's'})`
             : ''
-        setLibraryMessage(`Saved “${meta.name}”${elementSuffix}`)
+        setLibraryMessage(`Saved “${meta.name}” on this device${elementSuffix}`)
         await refreshSavedProjects()
       } catch (err) {
         setLibraryMessage(`Save failed: ${formatSaveError(err)}`)
@@ -818,7 +818,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           elementCount > 0
             ? ` (${elementCount} element${elementCount === 1 ? '' : 's'})`
             : ''
-        setLibraryMessage(`Saved new version “${meta.name}”${elementSuffix}`)
+        setLibraryMessage(`Saved new version “${meta.name}” on this device${elementSuffix}`)
         await refreshSavedProjects()
       } catch (err) {
         setLibraryMessage(`Save failed: ${formatSaveError(err)}`)

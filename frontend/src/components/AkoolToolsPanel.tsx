@@ -10,7 +10,12 @@ import {
   waitForAkoolImageToVideo,
   type AkoolVoice,
 } from '../akool/client'
-import { uploadTempAssetUrl } from '../lib/uploadTempAsset'
+import {
+  hasUserAkoolApiKey,
+  requestOpenSettings,
+  subscribeAkoolKeyChange,
+} from '../akool/userKey'
+import { deleteTempAsset, uploadTempAssetUrl } from '../lib/uploadTempAsset'
 import { useAuth } from '../state/AuthProvider'
 import { useProject } from '../state/ProjectProvider'
 
@@ -53,11 +58,17 @@ export function AkoolToolsPanel() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const [hasApiKey, setHasApiKey] = useState(hasUserAkoolApiKey)
   const autoLoadDone = useRef(false)
 
   const imageMaterials = state.document.materials.filter((m) => m.kind === 'image')
 
+  useEffect(() => subscribeAkoolKeyChange(() => setHasApiKey(hasUserAkoolApiKey())), [])
+
   const loadVoices = useCallback(async () => {
+    if (!hasUserAkoolApiKey()) {
+      return
+    }
     setLoadingVoices(true)
     setError('')
     try {
@@ -72,7 +83,7 @@ export function AkoolToolsPanel() {
   }, [])
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !hasApiKey) {
       autoLoadDone.current = false
       return
     }
@@ -81,7 +92,7 @@ export function AkoolToolsPanel() {
     }
     autoLoadDone.current = true
     void loadVoices()
-  }, [open, loadVoices])
+  }, [open, hasApiKey, loadVoices])
 
   useEffect(() => {
     return () => {
@@ -228,11 +239,13 @@ export function AkoolToolsPanel() {
     setBusy(true)
     setError('')
     setStatus('Preparing source image…')
+    let tempPath: string | null = null
     try {
-      const imageUrl = await uploadTempAssetUrl(sourceAsset.file, user.id)
+      const uploaded = await uploadTempAssetUrl(sourceAsset.file, user.id)
+      tempPath = uploaded.path
       setStatus('Creating image-to-video job…')
       const { taskId } = await createAkoolImageToVideo({
-        imageUrl,
+        imageUrl: uploaded.signedUrl,
         prompt,
         resolution: i2vResolution,
         videoLength: i2vLength,
@@ -250,6 +263,9 @@ export function AkoolToolsPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Image-to-video failed')
     } finally {
+      if (tempPath) {
+        await deleteTempAsset(tempPath).catch(() => undefined)
+      }
       setBusy(false)
     }
   }
@@ -261,6 +277,21 @@ export function AkoolToolsPanel() {
       </button>
       {open && (
         <div className="akool-tools-panel">
+          {!hasApiKey && (
+            <div className="akool-connect-banner">
+              <p className="crop-panel-hint">
+                Connect your own Akool API key to use text-to-speech, image generation,
+                and image-to-video. Your key is stored in this browser only.
+              </p>
+              <button
+                type="button"
+                className="btn btn-small btn-primary"
+                onClick={() => requestOpenSettings()}
+              >
+                Open Settings
+              </button>
+            </div>
+          )}
           <div className="akool-tabs">
             {(['tts', 'image', 'i2v'] as const).map((t) => (
               <button
@@ -332,7 +363,7 @@ export function AkoolToolsPanel() {
                     <button
                       type="button"
                       className="btn btn-small btn-primary"
-                      disabled={busy || !text.trim() || !voiceId}
+                      disabled={busy || !hasApiKey || !text.trim() || !voiceId}
                       onClick={() => void onAddTtsToMaterials(false)}
                     >
                       Update audio
@@ -354,7 +385,7 @@ export function AkoolToolsPanel() {
                     <button
                       type="button"
                       className="btn btn-small"
-                      disabled={busy || !text.trim()}
+                      disabled={busy || !hasApiKey || !text.trim()}
                       onClick={() => void onAddTtsToMaterials(false)}
                     >
                       Save to materials
@@ -362,7 +393,7 @@ export function AkoolToolsPanel() {
                     <button
                       type="button"
                       className="btn btn-small btn-primary"
-                      disabled={busy || !text.trim()}
+                      disabled={busy || !hasApiKey || !text.trim()}
                       onClick={() => void onAddTtsToMaterials(true)}
                     >
                       Save + add to timeline
@@ -414,7 +445,7 @@ export function AkoolToolsPanel() {
               <button
                 type="button"
                 className="btn btn-small btn-primary"
-                disabled={busy}
+                disabled={busy || !hasApiKey}
                 onClick={() => void onGenerateImage()}
               >
                 {busy ? 'Generating…' : 'Generate image → materials'}
@@ -475,7 +506,7 @@ export function AkoolToolsPanel() {
               <button
                 type="button"
                 className="btn btn-small btn-primary"
-                disabled={busy || imageMaterials.length === 0}
+                disabled={busy || !hasApiKey || imageMaterials.length === 0}
                 onClick={() => void onGenerateImageToVideo()}
               >
                 {busy ? 'Generating…' : 'Generate video → materials'}

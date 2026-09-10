@@ -14,7 +14,6 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       akoolProxyPlugin({
-        apiKey: env.AKOOL_API_KEY,
         supabaseUrl: env.SUPABASE_URL,
         supabaseAnonKey: env.SUPABASE_ANON_KEY,
       }),

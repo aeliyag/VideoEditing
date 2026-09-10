@@ -88,7 +88,7 @@ export function AuthPage() {
         <p className="auth-subtitle">
           {forgotPassword
             ? 'Enter your email and we will send a password reset link.'
-            : 'Sign in to save projects to the cloud and use TTS features.'}
+            : 'Sign in to use the editor. Projects save on this device. Connect your own Akool API key in Settings for AI tools.'}
         </p>
 
         {!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY ? (

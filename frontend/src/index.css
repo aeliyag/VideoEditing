@@ -461,6 +461,7 @@ label.btn {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+  overflow: visible;
 }
 
 .project-name-row {
@@ -1303,6 +1304,41 @@ label.btn {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.settings-wrap {
+  position: relative;
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 20;
+  width: min(22rem, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.settings-connected {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: #7dcea0;
+}
+
+.akool-connect-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #12151c;
 }
 
 .toolbar-user-email {
